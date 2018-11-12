@@ -124,6 +124,7 @@ int main()
 
 	if (sym == mainsym)
 	{
+		getsym();
 		if (sym == lbrace)
 		{
 			getsym();
@@ -251,8 +252,9 @@ void getch()
 	{
 		if (feof(fin))
 		{
-			printf("Program incomplete!\n");
-			exit(1);
+			/*printf("Program incomplete!\n");
+			exit(1);*/
+			return;
 		}
 		ll = 0;
 		cc = 0;
@@ -407,10 +409,7 @@ void getsym()
 							}
 							else {
 								sym = ssym[ch];		/* 当符号不满足上述条件时，全部按照单字符符号处理 */
-								if (sym != period)
-								{
-									getch();
-								}
+								getch();
 							}
 						}
 					}
