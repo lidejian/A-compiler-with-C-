@@ -17,7 +17,7 @@
 #define true 1
 #define false 0
 
-#define norw 17       /* 保留字个数 */
+#define norw 19       /* 保留字个数 */
 #define txmax 100     /* 符号表容量 */
 #define nmax 14       /* 数字的最大位数 */
 #define al 10         /* 标识符的最大长度 */
@@ -33,7 +33,7 @@ enum symbol {
 	writesym, readsym, dosym, callsym, constsym,
 	varsym, procsym, lbrace, rbrace, lbracket,
 	rbracket, equal, mainsym, elsesym, intsym,
-	charsym,
+	charsym, selfplus,selfminus,repeatsym,untilsym,
 };
 
 #define symnum 41
@@ -69,7 +69,7 @@ struct tablestruct table[txmax]; /* 符号表 */
 
 FILE* fin;      /* 输入源文件 */
 FILE* foutput;  /* 输出文件及出错示意（如有错） */
-char fname[al];
+char fname[al] = "test.txt";			//------------------------------------调试使用，最后修改-----------------------------------
 
 
 void error(int n);
@@ -93,7 +93,7 @@ void enter(enum object k, int* ptx, int s);
 int main()
 {
 	printf("Input pl/0 file?   ");
-	scanf("%s", fname);		/* 输入文件名 */
+	//scanf("%s", fname);		/* 输入文件名 *///------------------------------------调试使用，最后修改-----------------------------------
 
 	if ((fin = fopen(fname, "r")) == NULL)
 	{
@@ -198,10 +198,12 @@ void init()
 	strcpy(&(word[10][0]), "odd");
 	strcpy(&(word[11][0]), "procedure");
 	strcpy(&(word[12][0]), "read");
-	strcpy(&(word[13][0]), "then");
-	strcpy(&(word[14][0]), "var");
-	strcpy(&(word[15][0]), "while");
-	strcpy(&(word[16][0]), "write");
+	strcpy(&(word[13][0]), "repeat");
+	strcpy(&(word[14][0]), "then");
+	strcpy(&(word[15][0]), "until");
+	strcpy(&(word[16][0]), "var");
+	strcpy(&(word[17][0]), "while");
+	strcpy(&(word[18][0]), "write");
 
 	/* 设置保留字符号 */
 	wsym[0] = beginsym;
@@ -217,10 +219,12 @@ void init()
 	wsym[10] = oddsym;
 	wsym[11] = procsym;
 	wsym[12] = readsym;
-	wsym[13] = thensym;
-	wsym[14] = varsym;
-	wsym[15] = whilesym;
-	wsym[16] = writesym;	
+	wsym[13] = repeatsym;
+	wsym[14] = thensym;
+	wsym[15] = untilsym;
+	wsym[16] = varsym;
+	wsym[17] = whilesym;
+	wsym[18] = writesym;	
 }
 
 
@@ -389,7 +393,7 @@ void getsym()
 					}
 					else
 					{
-						if (ch == '=')	//检测==符号
+						if (ch == '=')	//检测==符号  或 单独的等于号
 						{
 							getch();
 							if (ch == '=')
@@ -397,6 +401,8 @@ void getsym()
 								sym = equal;
 								getch();
 							}
+							else
+								sym = eql;
 						}
 						else {
 							if (ch == '!')	//检测不等于！=符号
@@ -408,8 +414,33 @@ void getsym()
 								}
 							}
 							else {
-								sym = ssym[ch];		/* 当符号不满足上述条件时，全部按照单字符符号处理 */
-								getch();
+								if (ch == '+') {	//检测自增运算符++ 或 + 
+									getch();
+									if (ch == '+')
+									{
+										sym = selfplus;
+										getch();
+									}
+									else
+										sym = plus;
+								}
+								else
+								{
+									if (ch == '-') {	//检测自减运算符-- 或 - 
+										getch();
+										if (ch == '-')
+										{
+											sym = selfminus;
+											getch();
+										}
+										else
+											sym = minus;
+									}
+									else {
+										sym = ssym[ch];		/* 当符号不满足上述条件时，全部按照单字符符号处理 */
+										getch();
+									}
+								}
 							}
 						}
 					}
@@ -497,7 +528,7 @@ void declaration_stat(int* ptx)
 
 void statement_list(int* ptx)
 {
-	while (sym == ifsym || sym == whilesym || sym == readsym || sym == writesym ||
+	while (sym == ifsym || sym == whilesym || sym == repeatsym || sym == readsym || sym == writesym ||
 		sym == lparen || sym == semicolon || sym == ident || sym == number)
 	{
 		statement(ptx);
@@ -511,6 +542,7 @@ void statement(int *ptx)
 		getsym();
 		if (sym == lparen)
 		{
+			getsym();
 			expression(ptx);
 			if (sym == rparen)
 			{
@@ -546,11 +578,44 @@ void statement(int *ptx)
 		else
 			error(0);	//while后应为左括号
 	}
-	else if (sym == readsym)	//statement 是 read_stat
+	else if (sym == repeatsym)	//statement 是 repeat_stat---------------------------------------------
 	{
 		getsym();
+		statement(ptx);
+		if (sym == untilsym)
+		{
+			getsym();
+			if (sym == lparen) 
+			{
+				getsym();
+				expression(ptx);
+				if (sym == rparen)
+				{
+					getsym();
+				}
+				else
+				{
+					error(0);	//expression后跟右括号
+				}
+			}
+			else
+			{
+				error(0);	//until后必须跟左括号
+			}
+		}
+		else
+			error(0);	//repeat后必须跟until
+	}
+	else if (sym == readsym)	//statement 是 read_stat
+	{
+		int i;
+		getsym();
 		if (sym == ident) {
-			//position();	//待写~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+			i = position(id, *ptx);
+			if (i == 0)
+			{
+				error(0);	//标识符未声明
+			}
 			getsym();
 			if (sym == lbracket) {	//左中括号，是数组形式
 				getsym();
@@ -615,10 +680,16 @@ void statement(int *ptx)
 
 void expression(int *ptx)
 {
+	int i;
 	if (sym == lparen || sym == number) {
 		simple_expr(ptx);
 	}
 	else if (sym == ident) {
+		i = position(id, *ptx);/* 查找标识符在符号表中的位置 */
+		if (i == 0)
+		{
+			error(0);	/* 标识符未声明 */
+		}
 		getsym();
 		if (sym == lbracket) {	//左中括号，是数组形式
 			getsym();
@@ -635,6 +706,9 @@ void expression(int *ptx)
 			getsym();
 			expression(ptx);
 		}
+		else if(sym == selfplus || sym == selfminus) {		//expression 扩展： expression: var++ | var--
+			getsym();
+		}
 		else if (sym == times || sym == slash) {	//simple_expr嵌套之factor读完var
 			getsym();
 			factor(ptx);
@@ -643,7 +717,7 @@ void expression(int *ptx)
 			getsym();
 			term(ptx);
 		}
-		else if (sym == gtr || sym == lss || sym == geq || sym == leq || sym == equal || sym == nequal) {
+		else if (sym == gtr || sym == lss || sym == geq || sym == leq || sym == equal || sym == nequal ) {
 			getsym();
 			additive_expr(ptx);
 		}
@@ -684,6 +758,7 @@ void term(int *ptx)
 
 void factor(int *ptx)
 {
+	int i;
 	if (sym == lparen) {
 		getsym();
 		expression(ptx);
@@ -694,7 +769,11 @@ void factor(int *ptx)
 			error(0);	//expression后应为右括号
 	}
 	else if (sym == ident) {
-		//position();	//待写~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+		i = position(id, *ptx);/* 查找标识符在符号表中的位置 */
+		if (i == 0)
+		{
+			error(0);	/* 标识符未声明 */
+		}
 		getsym();
 		if (sym == lbracket) {	//左中括号，是数组形式
 			getsym();
