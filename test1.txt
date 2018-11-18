@@ -1,0 +1,20 @@
+main{
+	int a;
+	int ta;
+	int b;
+	int tb;
+	int t;
+	read a;
+	read b;
+	ta=a;
+if(++a*3+b++*4)
+	tb=b;
+if(a++*3+(++b)*4)
+	{
+		t=a;
+	}
+if(a*b/t)
+		t=a;
+if(a*b==0)
+		t=a;
+} 

@@ -1,0 +1,24 @@
+main{
+	int a;
+	int ta;
+	int b;
+	int tb;
+	int t;
+	read a;
+	read b;
+	ta=a;
+	tb=b;
+	if(a<b)
+	{
+		t=a;
+		a=b;
+		b=t;
+	}
+	while(b!=0)
+	{
+		t=b;
+		b=a%b;
+		a=t;
+	}
+	write(ta*tb/b);
+} 
