@@ -4,9 +4,13 @@
 * The program has been tested on Visual Studio 2010
 *
 * 使用方法：
-* 运行后输入PL/0源程序文件名
-* foutput.txt输出源文件及出错示意（如有错）
-* 一旦遇到错误就停止语法分析
+* 运行后输入PL/0源程序文件名	 * 运行后输入PL/0源程序文件名
+* foutput.txt输出源文件及出错示意（如有错）	 * 回答是否输出虚拟机代码
+* 一旦遇到错误就停止语法分析	 * 回答是否输出符号表
+* fcode.txt输出虚拟机代码
+* foutput.txt输出源文件、出错示意（如有错）和各行对应的生成代码首地址（如无错）
+* fresult.txt输出运行结果
+* ftable.txt输出符号表
 */
 
 #include<stdio.h>
@@ -21,6 +25,11 @@
 #define txmax 100     /* 符号表容量 */
 #define nmax 14       /* 数字的最大位数 */
 #define al 10         /* 标识符的最大长度 */
+#define maxerr 30     /* 允许的最多错误数 */
+#define amax 2048     /* 地址上界*/
+#define levmax 3      /* 最大允许过程嵌套声明层数*/
+#define cxmax 200     /* 最多的虚拟机代码数 */
+#define stacksize 500 /* 运行时数据栈元素最多为500个 */
 
 
 /* 符号 */
@@ -44,17 +53,38 @@ enum object {
 	character,
 };
 
+/* 虚拟机代码指令 */
+enum fct {
+	lit, opr, lod,
+	sto, cal, ini,
+	jmp, jpc,
+};
+#define fctnum 8
 
+/* 虚拟机代码结构 */
+struct instruction
+{
+	enum fct f; /* 虚拟机代码指令 */
+	int l;      /* 引用层与声明层的层次差 */
+	int a;      /* 根据f的不同而不同 */
+};
+
+bool listswitch;   /* 显示虚拟机代码与否 */
+bool tableswitch;  /* 显示符号表与否 */
 char ch;            /* 存放当前读取的字符，getch 使用 */
 enum symbol sym;    /* 当前的符号 */
 char id[al + 1];      /* 当前ident，多出的一个字节用于存放0 */
 int num;            /* 当前number */
 int cc, ll;         /* getch使用的计数器，cc表示当前字符(ch)的位置，ll为line length缓存区长度 */
+int cx;             /* 虚拟机代码指针, 取值范围[0, cxmax-1]*/
 char line[81];      /* 读取行缓冲区 */
 char a[al + 1];       /* 临时符号，多出的一个字节用于存放0 */
+struct instruction code[cxmax]; /* 存放虚拟机代码的数组 */
 char word[norw][al];        /* 保留字 */
 enum symbol wsym[norw];     /* 保留字对应的符号值 */
 enum symbol ssym[256];      /* 单字符的符号值 */
+char mnemonic[fctnum][5];   /* 虚拟机代码指令名称 */
+
 
 
 							/* 符号表结构 */
@@ -63,12 +93,17 @@ struct tablestruct
 	char name[al];	    /* 名字 */
 	enum object kind;	/* 类型：int，char */
 	int size;			/* 如果是数组，存放数组大小 */
+	int val;            /* 数值，仅const使用 */
+	int adr;            /* 地址，仅const不使用 */
 };
 
 struct tablestruct table[txmax]; /* 符号表 */
 
 FILE* fin;      /* 输入源文件 */
-FILE* foutput;  /* 输出文件及出错示意（如有错） */
+FILE* ftable;	/* 输出符号表 */
+FILE* fcode;    /* 输出虚拟机代码 */
+FILE* foutput;  /* 输出文件及出错示意（如有错）、各行对应的生成代码首地址（如无错） */
+FILE* fresult;  /* 输出执行结果 */
 char fname[al] = "test.txt";			//------------------------------------调试使用，最后修改-----------------------------------
 
 
@@ -76,8 +111,9 @@ void error(int n);
 void getsym();
 int getch();
 void init();
-int declaration_list(int tx);
-void declaration_stat(int* ptx);
+void gen(enum fct x, int y, int z);
+int declaration_list(int tx,int dx);
+void declaration_stat(int* ptx,int *pdx);
 void statement_list(int* ptx);
 void statement(int *ptx);
 void expression(int *ptx);
@@ -85,8 +121,11 @@ void simple_expr(int *ptx);
 void additive_expr(int *ptx);
 void term(int *ptx);
 void factor(int *ptx);
+void listcode(int cx0);
+void listall();
 int position(char* idt, int tx);
-void enter(enum object k, int* ptx, int s);
+void enter(enum object k, int* ptx, int s, int* pdx);
+void interpret();
 
 
 /* 主程序开始 */
@@ -116,8 +155,24 @@ int main()
 		exit(1);
 	}
 
+	if ((ftable = fopen("ftable.txt", "w")) == NULL)
+	{
+		printf("Can't open ftable.txt file!\n");
+		exit(1);
+	}
+
+	printf("List object codes?(Y/N)");	/* 是否输出虚拟机代码 */
+	//scanf("%s", fname);	//--------------------------------调试---------------------------
+	fname[0] = 'y';
+	listswitch = (fname[0] == 'y' || fname[0] == 'Y');
+
+	printf("List symbol table?(Y/N)");	/* 是否输出符号表 */
+	//scanf("%s", fname);		//--------------------------------调试---------------------------
+	fname[0] = 'y';
+	tableswitch = (fname[0] == 'y' || fname[0] == 'Y');
+
 	init();		/* 初始化 */
-	cc = ll = 0;
+	cc = ll = cx = 0;
 	ch = ' ';
 
 	getsym();
@@ -128,29 +183,47 @@ int main()
 		if (sym == lbrace)
 		{
 			getsym();
-			int i = declaration_list(0);		/* 处理分程序 */
+			int i = declaration_list(0,3);		/* 处理分程序 */
 			statement_list(&i);		/* 处理分程序 */
 			if (sym != rbrace)
 			{
-				error(92);	//格式错误，应是右大括号
+				error(100);	//格式错误，应是右大括号
 			}
 			else
 			{
 				printf("\n===Parsing success!===\n");
 				fprintf(foutput, "\n===Parsing success!===\n");
+
+				if ((fcode = fopen("fcode.txt", "w")) == NULL)
+				{
+					printf("Can't open fcode.txt file!\n");
+					exit(1);
+				}
+
+				if ((fresult = fopen("fresult.txt", "w")) == NULL)
+				{
+					printf("Can't open fresult.txt file!\n");
+					exit(1);
+				}
+
+				listall();	 /* 输出所有代码 */
+				fclose(fcode);
+
+				interpret();	/* 调用解释执行程序 */
+				fclose(fresult);
 			}
 		}
 		else
-			error(91);	//格式错误，应是左大括号
+			error(101);	//格式错误，应是左大括号
 	}
 	else
-		error(90);	//格式错误，应是main
+		error(102);	//格式错误，应是main
 
 
 	fclose(foutput);
 	fclose(fin);
 
-	system("pause");
+	//system("pause");
 
 	return 0;
 }
@@ -226,6 +299,17 @@ void init()
 	wsym[16] = varsym;
 	wsym[17] = whilesym;
 	wsym[18] = writesym;	
+
+	/* 设置指令名称 */
+	strcpy(&(mnemonic[lit][0]), "lit");
+	strcpy(&(mnemonic[opr][0]), "opr");
+	strcpy(&(mnemonic[lod][0]), "lod");
+	strcpy(&(mnemonic[sto][0]), "sto");
+	strcpy(&(mnemonic[cal][0]), "cal");
+	strcpy(&(mnemonic[ini][0]), "int");
+	strcpy(&(mnemonic[jmp][0]), "jmp");
+	strcpy(&(mnemonic[jpc][0]), "jpc");
+
 }
 
 
@@ -348,7 +432,7 @@ void getsym()
 			k--;
 			if (k > nmax) /* 数字位数太多 */
 			{
-				error(30);
+				error(103);
 			}
 		}
 		else
@@ -459,14 +543,14 @@ void getsym()
 															break;
 													}
 													if (getch() == -1)
-														error(0);	//读到文件末尾
+														error(104);	//读到文件末尾
 													if (ch == '/') {	//读取到区块注释结束符*/
 														getch();
 														getsym();
 														break;
 													}
 													if (ch == '\0')
-														error(0);	//匹配到最后仍没有匹配到*/
+														error(105);	//匹配到最后仍没有匹配到*/
 												}
 											}
 											else
@@ -487,19 +571,64 @@ void getsym()
 	}
 }
 
-
-
-int declaration_list(int tx)
+/*
+* 生成虚拟机代码
+*
+* x: instruction.f;
+* y: instruction.l;
+* z: instruction.a;
+*/
+void gen(enum fct x, int y, int z)
 {
+	if (cx >= cxmax)
+	{
+		printf("Program is too long!\n");	/* 生成的虚拟机代码程序过长 */
+		exit(1);
+	}
+	if (z >= amax)
+	{
+		printf("Displacement address is too big!\n");	/* 地址偏移越界 */
+		exit(1);
+	}
+	code[cx].f = x;
+	code[cx].l = y;
+	code[cx].a = z;
+	cx++;
+}
+
+int declaration_list(int tx, int dx)
+{
+	gen(jmp, 0, 1);
 	while (sym == intsym || sym == charsym)
 	{
-		declaration_stat(&tx);
+		declaration_stat(&tx,&dx);
 	}
+	gen(ini, 0, dx);
+
+	int i;
+	if (tableswitch)		/* 输出符号表 */
+	{
+		for (i = 1; i <= tx; i++)
+		{
+			switch (table[i].kind)
+			{
+			case integer:
+				printf("    %d var   %s ", i, table[i].name);
+				printf("addr=%d\n", table[i].adr);
+				fprintf(ftable, "    %d var   %s ", i, table[i].name);
+				fprintf(ftable, "addr=%d\n", table[i].adr);
+				break;
+			}
+		}
+		printf("\n");
+		fprintf(ftable, "\n");
+	}
+
 	return tx;
 }
 
 
-void declaration_stat(int* ptx)
+void declaration_stat(int* ptx,int *pdx)
 {
 	int is_int_flag;	//用来记录是int还是char,
 	if (sym == intsym || sym == charsym)	//如果是type
@@ -515,9 +644,9 @@ void declaration_stat(int* ptx)
 			if (sym == semicolon)
 			{
 				if (is_int_flag == 1)
-					enter(integer, ptx, 0);		/* 填写符号表 */
+					enter(integer, ptx, 0, pdx);		/* 填写符号表 */
 				else
-					enter(character, ptx, 0);
+					enter(character, ptx, 0, pdx);
 				getsym();
 			}
 			else if (sym == lbracket)
@@ -526,13 +655,13 @@ void declaration_stat(int* ptx)
 				if (sym == number)
 				{
 					if (is_int_flag == 1)
-						enter(integer, ptx, num);	/* 填写符号表 *///----------------------------------------------
+						enter(integer, ptx, num, pdx);	/* 填写符号表 *///----------------------------------------------
 					else
-						enter(character, ptx, num);
+						enter(character, ptx, num, pdx);
 					getsym();
 				}
 				else
-					error(0);	/* 数组中间应为number */
+					error(106);	/* 数组中间应为number */
 
 
 				if (sym == rbracket)
@@ -543,21 +672,21 @@ void declaration_stat(int* ptx)
 						getsym();
 					}
 					else
-						error(0);	/* 格式错误，数组声明完应为分号 */
+						error(107);	/* 格式错误，数组声明完应为分号 */
 				}
 				else
-					error(93);	/* 格式错误，应是右中括号 */
+					error(108);	/* 格式错误，应是右中括号 */
 
 			}
 			else
-				error(0);	/* 格式错误，ID后应为分号或左括号 */
+				error(109);	/* 格式错误，ID后应为分号或左括号 */
 		}
 		else
-			error(0);	//格式错误，type后应为ID
+			error(110);	//格式错误，type后应为ID
 	}
 	else
 	{
-		error(0);	//type只能是int或char
+		error(111);	//type只能是int或char
 	}
 }
 
@@ -570,6 +699,7 @@ void statement_list(int* ptx)
 	{
 		statement(ptx);
 	}
+	gen(opr, 0, 0);
 }
 
 void statement(int *ptx)
@@ -592,10 +722,10 @@ void statement(int *ptx)
 				}
 			}
 			else
-				error(0);	//expression后应为右括号
+				error(112);	//expression后应为右括号
 		}
 		else
-			error(0);	//if后应为左括号
+			error(113);	//if后应为左括号
 	}
 	else if (sym == whilesym)	//statement 是 while_stat
 	{
@@ -610,10 +740,10 @@ void statement(int *ptx)
 				statement(ptx);
 			}
 			else
-				error(0);	//expression后应为右括号
+				error(114);	//expression后应为右括号
 		}
 		else
-			error(0);	//while后应为左括号
+			error(115);	//while后应为左括号
 	}
 	else if (sym == repeatsym)	//statement 是 repeat_stat---------------------------------------------
 	{
@@ -632,16 +762,16 @@ void statement(int *ptx)
 				}
 				else
 				{
-					error(0);	//expression后跟右括号
+					error(116);	//expression后跟右括号
 				}
 			}
 			else
 			{
-				error(0);	//until后必须跟左括号
+				error(117);	//until后必须跟左括号
 			}
 		}
 		else
-			error(0);	//repeat后必须跟until
+			error(118);	//repeat后必须跟until
 	}
 	else if (sym == readsym)	//statement 是 read_stat
 	{
@@ -651,7 +781,7 @@ void statement(int *ptx)
 			i = position(id, *ptx);
 			if (i == 0)
 			{
-				error(0);	//标识符未声明
+				error(119);	//标识符未声明
 			}
 			getsym();
 			if (sym == lbracket) {	//左中括号，是数组形式
@@ -662,29 +792,35 @@ void statement(int *ptx)
 					getsym();
 				}
 				else
-					error(0);	//数组右边必须是右中括号
+					error(120);	//数组右边必须是右中括号
 			}
+
+			gen(opr, 0, 16);	/* 生成输入指令，读取值到栈顶 */
+			gen(sto, 0, table[i].adr);	/* 将栈顶内容送入变量单元中 */
+
 		}
 		else
-			error(0);	//read后应为var,而first(var)={ident}
+			error(121);	//read后应为var,而first(var)={ident}
 
 		if (sym == semicolon)
 		{
 			getsym();
 		}
 		else
-			error(0);	//少了分号
+			error(122);	//少了分号
 	}
 	else if (sym == writesym)	//statement 是 write_stat
 	{
 		getsym();
 		expression(ptx);
+		gen(opr, 0, 14);	/* 生成输出指令，输出栈顶的值 */
+		gen(opr, 0, 15);	/* 生成换行指令 */
 		if (sym == semicolon)
 		{
 			getsym();
 		}
 		else
-			error(0);	//少了分号
+			error(123);	//少了分号
 	}
 	else if (sym == lbrace)	//statement 是 compound_stat
 	{
@@ -695,7 +831,7 @@ void statement(int *ptx)
 			getsym();
 		}
 		else
-			error(0);	//compound_stat的最后应为右大括号
+			error(124);	//compound_stat的最后应为右大括号
 
 	}
 	else if (sym == semicolon)	//statement 是 expression_stat 之二
@@ -709,7 +845,7 @@ void statement(int *ptx)
 			getsym();
 		}
 		else
-			error(0);	//格式错误，不符合expression_stat格式，错误的statement表达式
+			error(125);	//格式错误，不符合expression_stat格式，错误的statement表达式
 	}
 
 }
@@ -724,10 +860,11 @@ void expression(int *ptx)
 		simple_expr(ptx);
 	}
 	else if (sym == ident) {
+		int single_ident_flag = 1;
 		i = position(id, *ptx);/* 查找标识符在符号表中的位置 */
 		if (i == 0)
 		{
-			error(0);	/* 标识符未声明 */
+			error(126);	/* 标识符未声明 */
 		}
 		getsym();
 		if (sym == lbracket) {	//左中括号，是数组形式
@@ -738,30 +875,79 @@ void expression(int *ptx)
 				getsym();
 			}
 			else
-				error(0);	//数组右边必须是右中括号
+				error(127);	//数组右边必须是右中括号
 		}
-
 		if (sym == eql) {	//expression之一
+			single_ident_flag = 0;
 			getsym();
 			expression(ptx);
+			if(i!=0)
+				gen(sto, 0, table[i].adr);
 		}
+		gen(lod, 0, table[i].adr);
 		if(sym == selfplus || sym == selfminus) {		//expression 扩展： expression: var++ | var--
+			single_ident_flag = 0;
 			getsym();
 		}
 
+		int plus_flag = 0, minus_flag = 0;
+		int times_flag = 0, slash_flag = 0, mod_flag = 0;
+
 		if (sym == times || sym == slash || sym == mod || sym == plus || sym == minus ) {
+			single_ident_flag = 0;
 			do {
+				plus_flag = (sym == plus) ? 1 : 0;	//进行记录+、或者-号，在读完term后进行生成指令代码
+				minus_flag = (sym == minus) ? 1 : 0;
+				times_flag = (sym == times) ? 1 : 0;
+				slash_flag = (sym == slash) ? 1 : 0;
+				mod_flag = (sym == mod) ? 1 : 0;
+
 				getsym();
 				term(ptx);
+
+				if (plus_flag)
+					gen(opr, 0, 2);	/* 生成加法指令 */
+				if (minus_flag)
+					gen(opr, 0, 3);	/* 生成减法指令 */
+				if (times_flag)
+					gen(opr, 0, 4);	/* 生成乘法指令 */
+				if (slash_flag)
+					gen(opr, 0, 5);	/* 生成除法指令 */
+				if (mod_flag)
+					gen(opr, 0, 17);	/* 生成取模指令 */
+
+				plus_flag = 0;		//将标记进行还原
+				minus_flag = 0;
+				times_flag = 0;
+				slash_flag = 0;
+				mod_flag = 0;
+
 				while (sym == times || sym == slash || sym == mod) {
+					times_flag = (sym == times) ? 1 : 0;
+					slash_flag = (sym == slash) ? 1 : 0;
+					mod_flag = (sym == mod) ? 1 : 0;
+
 					getsym();
 					factor(ptx);
+
+					if(times_flag)
+						gen(opr, 0, 4);	/* 生成乘法指令 */
+					if(slash_flag)
+						gen(opr, 0, 5);	/* 生成除法指令 */
+					if(mod_flag)
+						gen(opr, 0, 17);	/* 生成取模指令 */
+
+					times_flag = 0;
+					slash_flag = 0;
+					mod_flag = 0;
 				}
 			} while (sym == plus || sym == minus);
 		}
+		//if(single_ident_flag == 1)	//经测试，为单个ident
+		//	gen(lod, 0, table[i].adr);
 	}
 	else {
-		error(0);	//first（expression）只能是ident、lparen、number
+		error(128);	//first（expression）只能是ident、lparen、number
 	}
 	
 	if (sym == gtr || sym == lss || sym == geq || sym == leq || sym == equal || sym == nequal) {
@@ -807,13 +993,13 @@ void factor(int *ptx)
 			getsym();
 		}
 		else
-			error(0);	//expression后应为右括号
+			error(129);	//expression后应为右括号
 	}
 	else if (sym == ident) {
 		i = position(id, *ptx);/* 查找标识符在符号表中的位置 */
 		if (i == 0)
 		{
-			error(0);	/* 标识符未声明 */
+			error(130);	/* 标识符未声明 */
 		}
 		getsym();
 		if (sym == lbracket) {	//左中括号，是数组形式
@@ -824,14 +1010,18 @@ void factor(int *ptx)
 				getsym();
 			}
 			else
-				error(0);	//数组右边必须是右中括号
+				error(131);	//数组右边必须是右中括号
 		}
 		
 		if (sym == selfminus || sym == selfplus) {		//a++ 形式
 			getsym();
 		}
+
+		gen(lod, 0, table[i].adr);
+
 	}
 	else if (sym == number) {
+		gen(lit, 0, num);
 		getsym();
 	}
 	else if (sym == selfminus || sym == selfplus) {	//++a 形式
@@ -840,7 +1030,7 @@ void factor(int *ptx)
 			i = position(id, *ptx);/* 查找标识符在符号表中的位置 */
 			if (i == 0)
 			{
-				error(0);	/* 标识符未声明 */
+				error(132);	/* 标识符未声明 */
 			}
 			getsym();
 			if (sym == lbracket) {	//左中括号，是数组形式
@@ -851,14 +1041,14 @@ void factor(int *ptx)
 					getsym();
 				}
 				else
-					error(0);	//数组右边必须是右中括号
+					error(133);	//数组右边必须是右中括号
 			}
 		}
 		else
-			error(0);	//++、--后应为var
+			error(134);	//++、--后应为var
 	}
 	else
-		error(0);	//factor元素为三种
+		error(135);	//factor元素为三种
 }
 
 
@@ -872,12 +1062,19 @@ void factor(int *ptx)
 * size:	符号表元素大小，若为0代表变量，若大于0则表示数组
 *
 */
-void enter(enum object k, int* ptx, int s)
+void enter(enum object k, int* ptx, int s, int *pdx)
 {
 	(*ptx)++;
 	strcpy(table[(*ptx)].name, id); /* 符号表的name域记录标识符的名字 */
 	table[(*ptx)].kind = k;
 	table[(*ptx)].size = s;
+	switch (k)
+	{
+		case integer:	/* 变量 */
+			table[(*ptx)].adr = (*pdx);
+			(*pdx)++;
+			break;
+	}
 }
 
 /*
@@ -897,4 +1094,163 @@ int position(char* id, int tx)
 		i--;
 	}
 	return i;
+}
+
+/*
+* 输出目标代码清单
+*/
+void listcode(int cx0)
+{
+	int i;
+	if (listswitch)
+	{
+		printf("\n");
+		for (i = cx0; i < cx; i++)
+		{
+			printf("%d %s %d %d\n", i, mnemonic[code[i].f], code[i].l, code[i].a);
+		}
+	}
+}
+
+/*
+* 输出所有目标代码
+*/
+void listall()
+{
+	int i;
+	if (listswitch)
+	{
+		for (i = 0; i < cx; i++)
+		{
+			printf("%d %s %d %d\n", i, mnemonic[code[i].f], code[i].l, code[i].a);
+			fprintf(fcode, "%d %s %d %d\n", i, mnemonic[code[i].f], code[i].l, code[i].a);
+		}
+	}
+}
+
+/*
+* 解释程序
+*/
+void interpret()
+{
+	int p = 0; /* 指令指针 */
+	int b = 1; /* 指令基址 */
+	int t = 0; /* 栈顶指针 */
+	struct instruction i;	/* 存放当前指令 */
+	int s[stacksize];	/* 栈 */
+
+	printf("Start pl0\n");
+	fprintf(fresult, "Start pl0\n");
+	s[0] = 0; /* s[0]不用 */
+	s[1] = 0; /* 主程序的三个联系单元均置为0 */
+	s[2] = 0;
+	s[3] = 0;
+	do {
+		i = code[p];	/* 读当前指令 */
+		p = p + 1;
+		switch (i.f)
+		{
+		case lit:	/* 将常量a的值取到栈顶 */
+			t = t + 1;
+			s[t] = i.a;
+			break;
+		case opr:	/* 数学、逻辑运算 */
+			switch (i.a)
+			{
+			case 0:  /* 函数调用结束后返回 */
+				t = b - 1;
+				p = s[t + 3];
+				b = s[t + 2];
+				break;
+			case 1: /* 栈顶元素取反 */
+				s[t] = -s[t];
+				break;
+			case 2: /* 次栈顶项加上栈顶项，退两个栈元素，相加值进栈 */
+				t = t - 1;
+				s[t] = s[t] + s[t + 1];
+				break;
+			case 3:/* 次栈顶项减去栈顶项 */
+				t = t - 1;
+				s[t] = s[t] - s[t + 1];
+				break;
+			case 4:/* 次栈顶项乘以栈顶项 */
+				t = t - 1;
+				s[t] = s[t] * s[t + 1];
+				break;
+			case 5:/* 次栈顶项除以栈顶项 */
+				t = t - 1;
+				s[t] = s[t] / s[t + 1];
+				break;
+			case 6:/* 栈顶元素的奇偶判断 */
+				s[t] = s[t] % 2;
+				break;
+			case 8:/* 次栈顶项与栈顶项是否相等 */
+				t = t - 1;
+				s[t] = (s[t] == s[t + 1]);
+				break;
+			case 9:/* 次栈顶项与栈顶项是否不等 */
+				t = t - 1;
+				s[t] = (s[t] != s[t + 1]);
+				break;
+			case 10:/* 次栈顶项是否小于栈顶项 */
+				t = t - 1;
+				s[t] = (s[t] < s[t + 1]);
+				break;
+			case 11:/* 次栈顶项是否大于等于栈顶项 */
+				t = t - 1;
+				s[t] = (s[t] >= s[t + 1]);
+				break;
+			case 12:/* 次栈顶项是否大于栈顶项 */
+				t = t - 1;
+				s[t] = (s[t] > s[t + 1]);
+				break;
+			case 13: /* 次栈顶项是否小于等于栈顶项 */
+				t = t - 1;
+				s[t] = (s[t] <= s[t + 1]);
+				break;
+			case 14:/* 栈顶值输出 */
+				printf("%d", s[t]);
+				fprintf(fresult, "%d", s[t]);
+				t = t - 1;
+				break;
+			case 15:/* 输出换行符 */
+				printf("\n");
+				fprintf(fresult, "\n");
+				break;
+			case 16:/* 读入一个输入置于栈顶 */
+				t = t + 1;
+				printf("?");
+				fprintf(fresult, "?");
+				scanf("%d", &(s[t]));
+				fprintf(fresult, "%d\n", s[t]);
+				break;
+			case 17:/* 次栈顶项模以栈顶项 */
+				t = t - 1;
+				s[t] = s[t] % s[t + 1];
+				break;
+			}
+			break;
+		case lod:	/* 取相对当前过程的数据基地址为a的内存的值到栈顶 */
+			t = t + 1;
+			s[t] = s[ 1 + i.a];
+			break;
+		case sto:	/* 栈顶的值存到相对当前过程的数据基地址为a的内存 */
+			s[1+i.a] = s[t];
+			t = t - 1;
+			break;
+		case ini:	/* 在数据栈中为被调用的过程开辟a个单元的数据区 */
+			t = t + i.a;
+			break;
+		case jmp:	/* 直接跳转 */
+			p = i.a;
+			break;
+		case jpc:	/* 条件跳转 */
+			if (s[t] == 0)
+				p = i.a;
+			t = t - 1;
+			break;
+		}
+	} while (p != 0);
+	printf("End pl0\n");
+	fprintf(fresult, "End pl0\n");
 }
