@@ -74,7 +74,7 @@ char fname[al] = "test.txt";			//------------------------------------µ÷ÊÔÊ¹ÓÃ£¬×
 
 void error(int n);
 void getsym();
-void getch();
+int getch();
 void init();
 int declaration_list(int tx);
 void declaration_stat(int* ptx);
@@ -250,8 +250,11 @@ void error(int n)
 * ¹ıÂË¿Õ¸ñ£¬¶ÁÈ¡Ò»¸ö×Ö·û
 * Ã¿´Î¶ÁÒ»ĞĞ£¬´æÈëline»º³åÇø£¬line±»getsymÈ¡¿ÕºóÔÙ¶ÁÒ»ĞĞ
 * ±»º¯Êıgetsymµ÷ÓÃ
+* ·µ»ØÖµ£º
+*	0 Õı³£·µ»Ø
+*	1 ÎÄ¼ş½áÎ²
 */
-void getch()
+int getch()
 {
 	if (cc == ll) /* ÅĞ¶Ï»º³åÇøÖĞÊÇ·ñÓĞ×Ö·û£¬ÈôÎŞ×Ö·û£¬Ôò¶ÁÈëÏÂÒ»ĞĞ×Ö·ûµ½»º³åÇøÖĞ */
 	{
@@ -259,7 +262,7 @@ void getch()
 		{
 			/*printf("Program incomplete!\n");
 			exit(1);*/
-			return;
+			return -1;
 		}
 		ll = 0;
 		cc = 0;
@@ -281,6 +284,7 @@ void getch()
 	}
 	ch = line[cc];
 	cc++;
+	return 0;
 }
 
 /*
@@ -438,8 +442,40 @@ void getsym()
 											sym = minus;
 									}
 									else {
-										sym = ssym[ch];		/* µ±·ûºÅ²»Âú×ãÉÏÊöÌõ¼şÊ±£¬È«²¿°´ÕÕµ¥×Ö·û·ûºÅ´¦Àí */
-										getch();
+										if (ch == '/') {	//¼ì²â×¢ÊÍ//»ò/
+											getch();
+											if (ch == '/') {	//ĞĞ×¢ÊÍ//,Çå¿ÕĞĞ»º´æÇø,ÖØĞÂ¶ÁÈ¡sym
+												ll = cc = 0;
+												getch();
+												getsym();
+											}
+											else if (ch == '*') {	//Çø¿é×¢ÊÍ/*£¬Ò»Ö±¶ÁÈ¡,Ö±µ½*/Í£Ö¹
+												getch();
+												while (1)	/* ¹ıÂË¿Õ¸ñ¡¢»»ĞĞºÍÖÆ±í·û */
+												{
+													while (ch != '*') {
+														getch();
+														if (ch == '\0')
+															break;
+													}
+													if (getch() == -1)
+														error(0);	//¶Áµ½ÎÄ¼şÄ©Î²
+													if (ch == '/') {	//¶ÁÈ¡µ½Çø¿é×¢ÊÍ½áÊø·û*/
+														getch();
+														getsym();
+														break;
+													}
+													if (ch == '\0')
+														error(0);	//Æ¥Åäµ½×îºóÈÔÃ»ÓĞÆ¥Åäµ½*/
+												}
+											}
+											else
+												sym = ssym['/'];
+										}
+										else {
+											sym = ssym[ch];		/* µ±·ûºÅ²»Âú×ãÉÏÊöÌõ¼şÊ±£¬È«²¿°´ÕÕµ¥×Ö·û·ûºÅ´¦Àí */
+											getch();
+										}
 									}
 								}
 							}
