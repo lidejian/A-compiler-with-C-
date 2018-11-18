@@ -682,6 +682,8 @@ void statement(int *ptx)
 void expression(int *ptx)
 {
 	int i;
+	if (sym == selfminus || sym == selfplus)	//++a形式
+		getsym();
 	if (sym == lparen || sym == number) {
 		simple_expr(ptx);
 	}
@@ -707,16 +709,19 @@ void expression(int *ptx)
 			getsym();
 			expression(ptx);
 		}
-		else if(sym == selfplus || sym == selfminus) {		//expression 扩展： expression: var++ | var--
+		if(sym == selfplus || sym == selfminus) {		//expression 扩展： expression: var++ | var--
 			getsym();
 		}
-		else if (sym == times || sym == slash || sym == mod) {	//simple_expr嵌套之factor读完var
-			getsym();
-			factor(ptx);
-		}
-		else if (sym == plus || sym == minus) {
-			getsym();
-			term(ptx);
+
+		if (sym == times || sym == slash || sym == mod || sym == plus || sym == minus ) {
+			do {
+				getsym();
+				term(ptx);
+				while (sym == times || sym == slash || sym == mod) {
+					getsym();
+					factor(ptx);
+				}
+			} while (sym == plus || sym == minus);
 		}
 	}
 	else {
@@ -785,9 +790,36 @@ void factor(int *ptx)
 			else
 				error(0);	//数组右边必须是右中括号
 		}
+		
+		if (sym == selfminus || sym == selfplus) {		//a++ 形式
+			getsym();
+		}
 	}
 	else if (sym == number) {
 		getsym();
+	}
+	else if (sym == selfminus || sym == selfplus) {	//++a 形式
+		getsym();
+		if (sym == ident) {
+			i = position(id, *ptx);/* 查找标识符在符号表中的位置 */
+			if (i == 0)
+			{
+				error(0);	/* 标识符未声明 */
+			}
+			getsym();
+			if (sym == lbracket) {	//左中括号，是数组形式
+				getsym();
+				expression(ptx);
+				if (sym == rbracket)		//右中括号，数组结束
+				{
+					getsym();
+				}
+				else
+					error(0);	//数组右边必须是右中括号
+			}
+		}
+		else
+			error(0);	//++、--后应为var
 	}
 	else
 		error(0);	//factor元素为三种
