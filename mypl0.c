@@ -33,10 +33,10 @@ enum symbol {
 	writesym, readsym, dosym, callsym, constsym,
 	varsym, procsym, lbrace, rbrace, lbracket,
 	rbracket, equal, mainsym, elsesym, intsym,
-	charsym, selfplus,selfminus,repeatsym,untilsym,
+	charsym, selfplus,selfminus,repeatsym,untilsym,mod
 };
 
-#define symnum 41
+#define symnum 42
 
 /* 符号表中的类型 */
 enum object {
@@ -181,6 +181,7 @@ void init()
 	ssym['}'] = rbrace;
 	ssym['['] = lbracket;
 	ssym[']'] = rbracket;
+	ssym['%'] = mod;
 
 
 
@@ -709,7 +710,7 @@ void expression(int *ptx)
 		else if(sym == selfplus || sym == selfminus) {		//expression 扩展： expression: var++ | var--
 			getsym();
 		}
-		else if (sym == times || sym == slash) {	//simple_expr嵌套之factor读完var
+		else if (sym == times || sym == slash || sym == mod) {	//simple_expr嵌套之factor读完var
 			getsym();
 			factor(ptx);
 		}
@@ -717,15 +718,14 @@ void expression(int *ptx)
 			getsym();
 			term(ptx);
 		}
-		else if (sym == gtr || sym == lss || sym == geq || sym == leq || sym == equal || sym == nequal ) {
-			getsym();
-			additive_expr(ptx);
-		}
-		else
-			error(0);
 	}
 	else {
 		error(0);	//first（expression）只能是ident、lparen、number
+	}
+	
+	if (sym == gtr || sym == lss || sym == geq || sym == leq || sym == equal || sym == nequal) {
+		getsym();
+		additive_expr(ptx);
 	}
 }
 
@@ -741,7 +741,7 @@ void simple_expr(int *ptx)
 void additive_expr(int *ptx)
 {
 	term(ptx);
-	while (sym == plus || sym == minus) {
+	while (sym == plus || sym == minus ) {
 		getsym();
 		term(ptx);
 	}
@@ -750,7 +750,7 @@ void additive_expr(int *ptx)
 void term(int *ptx)
 {
 	factor(ptx);
-	while (sym == times || sym == slash) {
+	while (sym == times || sym == slash || sym == mod) {
 		getsym();
 		factor(ptx);
 	}
