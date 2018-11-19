@@ -1,5 +1,7 @@
 main{
-	int i,j,flag;
+	int i;
+	int j;
+	int flag;
 	i=2;
 	while(i<=100)
 	{
