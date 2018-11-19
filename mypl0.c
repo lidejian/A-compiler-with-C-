@@ -86,13 +86,12 @@ enum symbol ssym[256];      /* 单字符的符号值 */
 char mnemonic[fctnum][5];   /* 虚拟机代码指令名称 */
 
 
-
 							/* 符号表结构 */
 struct tablestruct
 {
 	char name[al];	    /* 名字 */
 	enum object kind;	/* 类型：int，char */
-	int size;			/* 如果是数组，存放数组大小 */
+	int idx;			/* 如果是数组，存放数组下标 */
 	int val;            /* 数值，仅const使用 */
 	int adr;            /* 地址，仅const不使用 */
 };
@@ -116,15 +115,15 @@ int declaration_list(int tx,int dx);
 void declaration_stat(int* ptx,int *pdx);
 void statement_list(int* ptx);
 void statement(int *ptx);
-void expression(int *ptx);
-void simple_expr(int *ptx);
-void additive_expr(int *ptx);
-void term(int *ptx);
-void factor(int *ptx);
+int expression(int *ptx);
+int simple_expr(int *ptx);
+int additive_expr(int *ptx);
+int term(int *ptx);
+int factor(int *ptx);
 void listcode(int cx0);
 void listall();
 int position(char* idt, int tx);
-void enter(enum object k, int* ptx, int s, int* pdx);
+void enter(enum object k, int* ptx, int idx, int* pdx);
 void interpret();
 
 
@@ -185,6 +184,7 @@ int main()
 			getsym();
 			int i = declaration_list(0,3);		/* 处理分程序 */
 			statement_list(&i);		/* 处理分程序 */
+			gen(opr, 0, 0);	                    /* 每个过程出口都要使用的释放数据段指令 */
 			if (sym != rbrace)
 			{
 				error(100);	//格式错误，应是右大括号
@@ -309,7 +309,6 @@ void init()
 	strcpy(&(mnemonic[ini][0]), "int");
 	strcpy(&(mnemonic[jmp][0]), "jmp");
 	strcpy(&(mnemonic[jpc][0]), "jpc");
-
 }
 
 
@@ -644,9 +643,9 @@ void declaration_stat(int* ptx,int *pdx)
 			if (sym == semicolon)
 			{
 				if (is_int_flag == 1)
-					enter(integer, ptx, 0, pdx);		/* 填写符号表 */
+					enter(integer, ptx, 1, pdx);		/* 填写符号表 */
 				else
-					enter(character, ptx, 0, pdx);
+					enter(character, ptx, 1, pdx);
 				getsym();
 			}
 			else if (sym == lbracket)
@@ -699,11 +698,13 @@ void statement_list(int* ptx)
 	{
 		statement(ptx);
 	}
-	gen(opr, 0, 0);
 }
 
 void statement(int *ptx)
 {
+	int tem;
+	int cx0;	//记录当前代码序号，回填时使用
+	int cx1;	//回填2
 	if (sym == ifsym)	//statement 是 if_stat
 	{
 		getsym();
@@ -711,6 +712,10 @@ void statement(int *ptx)
 		{
 			getsym();
 			expression(ptx);
+
+			cx0 = cx;
+			gen(jpc, 0, 0);	//条件不满足时跳转，先填充0，后面翻译完statement后进行回填
+
 			if (sym == rparen)
 			{
 				getsym();
@@ -720,6 +725,7 @@ void statement(int *ptx)
 					getsym();
 					statement(ptx);
 				}
+				code[cx0].a = cx ;	//进行if不满足条件的回填
 			}
 			else
 				error(112);	//expression后应为右括号
@@ -729,11 +735,17 @@ void statement(int *ptx)
 	}
 	else if (sym == whilesym)	//statement 是 while_stat
 	{
+
 		getsym();
 		if (sym == lparen)
 		{
+			cx0 = cx;
 			getsym();
 			expression(ptx);
+			cx1 = cx;
+
+			gen(jpc, 0, 0);	//条件不满足时跳转，先填充0，后面翻译完statement后进行回填
+
 			if (sym == rparen)
 			{
 				getsym();
@@ -741,12 +753,17 @@ void statement(int *ptx)
 			}
 			else
 				error(114);	//expression后应为右括号
+
+			gen(jmp, 0, cx0);
+			code[cx1].a = cx;	//进行if不满足条件的回填
 		}
 		else
 			error(115);	//while后应为左括号
 	}
 	else if (sym == repeatsym)	//statement 是 repeat_stat---------------------------------------------
 	{
+		cx0 = cx;
+
 		getsym();
 		statement(ptx);
 		if (sym == untilsym)
@@ -756,6 +773,11 @@ void statement(int *ptx)
 			{
 				getsym();
 				expression(ptx);
+
+				gen(jpc, 0, cx + 1);	//条件跳转，当不满足条件时，跳出循环
+										//（因为下一条是紧跟着的条件跳转，所以cx+1为循环的下面一条指令）
+				gen(jmp, 0, cx0);	//无条件跳转，调回到repeat开始的地方
+
 				if (sym == rparen)
 				{
 					getsym();
@@ -778,7 +800,7 @@ void statement(int *ptx)
 		int i;
 		getsym();
 		if (sym == ident) {
-			i = position(id, *ptx);
+			i = position(id, *ptx, 0);
 			if (i == 0)
 			{
 				error(119);	//标识符未声明
@@ -786,7 +808,10 @@ void statement(int *ptx)
 			getsym();
 			if (sym == lbracket) {	//左中括号，是数组形式
 				getsym();
-				expression(ptx);
+				tem = expression(ptx);
+
+				i = position(id, *ptx, tem);
+
 				if (sym == rbracket)		//右中括号，数组结束
 				{
 					getsym();
@@ -851,17 +876,20 @@ void statement(int *ptx)
 }
 
 
-void expression(int *ptx)
+int expression(int *ptx)
 {
 	int i;
+	int ans;
+	int tem;
 	if (sym == selfminus || sym == selfplus)	//++a形式
 		getsym();
 	if (sym == lparen || sym == number) {
-		simple_expr(ptx);
+		ans = simple_expr(ptx);
+		return ans;
 	}
 	else if (sym == ident) {
 		int single_ident_flag = 1;
-		i = position(id, *ptx);/* 查找标识符在符号表中的位置 */
+		i = position(id, *ptx, 0);/* 查找标识符在符号表中的位置 */
 		if (i == 0)
 		{
 			error(126);	/* 标识符未声明 */
@@ -869,7 +897,10 @@ void expression(int *ptx)
 		getsym();
 		if (sym == lbracket) {	//左中括号，是数组形式
 			getsym();
-			expression(ptx);
+			tem = expression(ptx);
+
+			i = position(id, *ptx, tem);/* 查找数组标识符在符号表中的位置 */
+
 			if (sym == rbracket)		//右中括号，数组结束
 			{
 				getsym();
@@ -884,62 +915,65 @@ void expression(int *ptx)
 			if(i!=0)
 				gen(sto, 0, table[i].adr);
 		}
-		gen(lod, 0, table[i].adr);
+		if (single_ident_flag == 1)
+			gen(lod, 0, table[i].adr);
 		if(sym == selfplus || sym == selfminus) {		//expression 扩展： expression: var++ | var--
 			single_ident_flag = 0;
 			getsym();
 		}
 
-		int plus_flag = 0, minus_flag = 0;
-		int times_flag = 0, slash_flag = 0, mod_flag = 0;
-
 		if (sym == times || sym == slash || sym == mod || sym == plus || sym == minus ) {
+			bool flag[symnum];	//进行符号的临时标记
+			for (i = 0; i<symnum; i++)
+			{
+				flag[i] = false;
+			}
 			single_ident_flag = 0;
 			do {
-				plus_flag = (sym == plus) ? 1 : 0;	//进行记录+、或者-号，在读完term后进行生成指令代码
-				minus_flag = (sym == minus) ? 1 : 0;
-				times_flag = (sym == times) ? 1 : 0;
-				slash_flag = (sym == slash) ? 1 : 0;
-				mod_flag = (sym == mod) ? 1 : 0;
+				flag[plus] = (sym == plus) ? true : false;	//进行记录+、或者-号，在读完term后进行生成指令代码
+				flag[minus] = (sym == minus) ? true : false;
+				flag[times] = (sym == times) ? true : false;
+				flag[slash] = (sym == slash) ? true : false;
+				flag[mod] = (sym == mod) ? true : false;
 
 				getsym();
 				term(ptx);
 
-				if (plus_flag)
+				if (flag[plus])
 					gen(opr, 0, 2);	/* 生成加法指令 */
-				if (minus_flag)
+				if (flag[minus])
 					gen(opr, 0, 3);	/* 生成减法指令 */
-				if (times_flag)
+				if (flag[times])
 					gen(opr, 0, 4);	/* 生成乘法指令 */
-				if (slash_flag)
+				if (flag[slash])
 					gen(opr, 0, 5);	/* 生成除法指令 */
-				if (mod_flag)
+				if (flag[mod])
 					gen(opr, 0, 17);	/* 生成取模指令 */
 
-				plus_flag = 0;		//将标记进行还原
-				minus_flag = 0;
-				times_flag = 0;
-				slash_flag = 0;
-				mod_flag = 0;
+				flag[plus] = false;		//将标记进行还原
+				flag[minus] = false;
+				flag[times] = false;
+				flag[slash] = false;
+				flag[mod] = false;
 
 				while (sym == times || sym == slash || sym == mod) {
-					times_flag = (sym == times) ? 1 : 0;
-					slash_flag = (sym == slash) ? 1 : 0;
-					mod_flag = (sym == mod) ? 1 : 0;
+					flag[times] = (sym == times) ? true : false;
+					flag[slash] = (sym == slash) ? true : false;
+					flag[mod] = (sym == mod) ? true : false;
 
 					getsym();
 					factor(ptx);
 
-					if(times_flag)
+					if(flag[times])
 						gen(opr, 0, 4);	/* 生成乘法指令 */
-					if(slash_flag)
+					if(flag[slash])
 						gen(opr, 0, 5);	/* 生成除法指令 */
-					if(mod_flag)
+					if(flag[mod])
 						gen(opr, 0, 17);	/* 生成取模指令 */
 
-					times_flag = 0;
-					slash_flag = 0;
-					mod_flag = 0;
+					flag[times] = false;
+					flag[slash] = false;
+					flag[mod] = false;
 				}
 			} while (sym == plus || sym == minus);
 		}
@@ -950,53 +984,178 @@ void expression(int *ptx)
 		error(128);	//first（expression）只能是ident、lparen、number
 	}
 	
+	bool flag[symnum];	//进行符号的临时标记
+	for (i = 0; i<symnum; i++)
+	{
+		flag[i] = false;
+	}
 	if (sym == gtr || sym == lss || sym == geq || sym == leq || sym == equal || sym == nequal) {
+		flag[gtr] = (sym == gtr) ? true : false;
+		flag[lss] = (sym == lss) ? true : false;
+		flag[geq] = (sym == geq) ? true : false;
+		flag[leq] = (sym == leq) ? true : false;
+		flag[equal] = (sym == equal) ? true : false;
+		flag[nequal] = (sym == nequal) ? true : false;
+
 		getsym();
 		additive_expr(ptx);
+
+		if (flag[gtr])
+			gen(opr, 0, 12);	/* 生成大于指令 */
+		if (flag[lss])
+			gen(opr, 0, 10);	/* 生成小于指令 */
+		if (flag[geq])
+			gen(opr, 0, 11);	/* 生成大于等于指令 */
+		if (flag[leq])
+			gen(opr, 0, 13);	/* 生成小于等于指令 */
+		if (flag[equal])
+			gen(opr, 0, 8);		/* 生成判断相等指令 */
+		if (flag[nequal])
+			gen(opr, 0, 9);		/* 生成判断不等指令 */
+
+		flag[gtr] = false;
+		flag[lss] = false;
+		flag[geq] = false;
+		flag[leq] = false;
+		flag[equal] = false;
+		flag[nequal] = false;
 	}
 }
 
-void simple_expr(int *ptx)
-{
-	additive_expr(ptx);
-	if (sym == gtr || sym == lss || sym == geq || sym == leq || sym == equal || sym == nequal) {
-		getsym();
-		additive_expr(ptx);
-	}
-}
-
-void additive_expr(int *ptx)
-{
-	term(ptx);
-	while (sym == plus || sym == minus ) {
-		getsym();
-		term(ptx);
-	}
-}
-
-void term(int *ptx)
-{
-	factor(ptx);
-	while (sym == times || sym == slash || sym == mod) {
-		getsym();
-		factor(ptx);
-	}
-}
-
-void factor(int *ptx)
+int simple_expr(int *ptx)
 {
 	int i;
+	int ans = additive_expr(ptx);
+
+	bool flag[symnum];	//进行符号的临时标记
+	for (i = 0; i<symnum; i++)
+	{
+		flag[i] = false;
+	}
+	if (sym == gtr || sym == lss || sym == geq || sym == leq || sym == equal || sym == nequal) {
+		flag[gtr] = (sym == gtr) ? true : false;
+		flag[lss] = (sym == lss) ? true : false;
+		flag[geq] = (sym == geq) ? true : false;
+		flag[leq] = (sym == leq) ? true : false;
+		flag[equal] = (sym == equal) ? true : false;
+		flag[nequal] = (sym == nequal) ? true : false;
+		
+		getsym();
+		additive_expr(ptx);
+
+		if (flag[gtr])
+			gen(opr, 0, 12);	/* 生成大于指令 */
+		if (flag[lss])
+			gen(opr, 0, 10);	/* 生成小于指令 */
+		if (flag[geq])
+			gen(opr, 0, 11);	/* 生成大于等于指令 */
+		if (flag[leq])
+			gen(opr, 0, 13);	/* 生成小于等于指令 */
+		if (flag[equal])
+			gen(opr, 0, 8);		/* 生成判断相等指令 */
+		if (flag[nequal])
+			gen(opr, 0, 9);		/* 生成判断不等指令 */
+
+		flag[gtr] = false;
+		flag[lss] = false;
+		flag[geq] = false;
+		flag[leq] = false;
+		flag[equal] = false;
+		flag[nequal] = false;
+
+	}
+	return ans;
+}
+
+int additive_expr(int *ptx)
+{
+	int i;
+	int ans = term(ptx);	//接收第一个操作数
+	int t;	//如果有第二个操作数，接收第二个操作数
+	
+	bool flag[symnum];	//进行符号的临时标记
+	for (i = 0; i<symnum; i++)
+	{
+		flag[i] = false;
+	}
+
+	while (sym == plus || sym == minus ) {
+		flag[plus] = (sym == plus) ? true : false;	//进行记录+、或者-号，在读完term后进行生成指令代码
+		flag[minus] = (sym == minus) ? true : false;
+
+		getsym();
+		t = term(ptx);
+
+		if (flag[plus]) {
+			gen(opr, 0, 2);		/* 生成加法指令 */
+			ans += t;
+		}
+		if (flag[minus]) {
+			gen(opr, 0, 3);		/* 生成减法指令 */
+			ans -= t;
+		}
+
+		flag[plus] = 0;		//将标记进行还原
+		flag[minus] = 0;
+	}
+	return ans;
+}
+
+int term(int *ptx)
+{
+	int i;
+	int ans = factor(ptx);	//接收第一个操作数
+	int t;	//如果有第二个操作数，接收第二个操作数
+
+	bool flag[symnum];	//进行符号的临时标记
+	for (i = 0; i<symnum; i++)
+	{
+		flag[i] = false;
+	}
+	while (sym == times || sym == slash || sym == mod) {
+		flag[times] = (sym == times) ? true : false;
+		flag[slash] = (sym == slash) ? true : false;
+		flag[mod] = (sym == mod) ? true : false;
+
+		getsym();
+		t = factor(ptx);	//接收第二个操作数
+		
+		if (flag[times]) {
+			gen(opr, 0, 4);		/* 生成乘法指令 */
+			ans *= t;
+		}
+		if (flag[slash]) {
+			gen(opr, 0, 5);		/* 生成除法指令 */
+			ans /= t;
+		}
+		if (flag[mod]) {
+			gen(opr, 0, 17);		/* 生成模以指令 */
+			ans %= t;
+		}
+
+		flag[times] = 0;		//还原
+		flag[slash] = 0;
+		flag[mod] = 0;
+	}
+	return ans;
+}
+
+int factor(int *ptx)
+{
+	int i;
+	int tem;
 	if (sym == lparen) {
 		getsym();
-		expression(ptx);
+		tem = expression(ptx);
 		if (sym == rparen) {
 			getsym();
+			return tem;
 		}
 		else
 			error(129);	//expression后应为右括号
 	}
 	else if (sym == ident) {
-		i = position(id, *ptx);/* 查找标识符在符号表中的位置 */
+		i = position(id, *ptx, 0);/* 查找标识符在符号表中的位置 */
 		if (i == 0)
 		{
 			error(130);	/* 标识符未声明 */
@@ -1004,7 +1163,10 @@ void factor(int *ptx)
 		getsym();
 		if (sym == lbracket) {	//左中括号，是数组形式
 			getsym();
-			expression(ptx);
+			tem = expression(ptx);
+
+			i = position(id, *ptx, tem);/* 查找数组标识符在符号表中的位置 */
+
 			if (sym == rbracket)		//右中括号，数组结束
 			{
 				getsym();
@@ -1021,8 +1183,9 @@ void factor(int *ptx)
 
 	}
 	else if (sym == number) {
-		gen(lit, 0, num);
+		gen(lit, 0, num);	/* 生成立即数指令 */
 		getsym();
+		return num;
 	}
 	else if (sym == selfminus || sym == selfplus) {	//++a 形式
 		getsym();
@@ -1062,18 +1225,21 @@ void factor(int *ptx)
 * size:	符号表元素大小，若为0代表变量，若大于0则表示数组
 *
 */
-void enter(enum object k, int* ptx, int s, int *pdx)
+void enter(enum object k, int* ptx, int idx, int *pdx)
 {
-	(*ptx)++;
-	strcpy(table[(*ptx)].name, id); /* 符号表的name域记录标识符的名字 */
-	table[(*ptx)].kind = k;
-	table[(*ptx)].size = s;
-	switch (k)
-	{
+	int i;
+	for (i = 0; i < idx; i++) {
+		(*ptx)++;
+		strcpy(table[(*ptx)].name, id); /* 符号表的name域记录标识符的名字 */
+		table[(*ptx)].kind = k;
+		table[(*ptx)].idx = i;
+		switch (k)
+		{
 		case integer:	/* 变量 */
 			table[(*ptx)].adr = (*pdx);
 			(*pdx)++;
 			break;
+		}
 	}
 }
 
@@ -1084,12 +1250,12 @@ void enter(enum object k, int* ptx, int s, int *pdx)
 * id:    要查找的名字
 * tx:     当前符号表尾指针
 */
-int position(char* id, int tx)
+int position(char* id, int tx, int idx)
 {
 	int i;
 	strcpy(table[0].name, id);
 	i = tx;
-	while (strcmp(table[i].name, id) != 0)
+	while (strcmp(table[i].name, id) != 0 || table[i].idx!=idx)
 	{
 		i--;
 	}

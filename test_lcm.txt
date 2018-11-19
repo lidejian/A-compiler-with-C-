@@ -20,5 +20,5 @@ main{
 		b=a%b;
 		a=t;
 	}
-	write(ta*tb/b);
+	write(ta*tb/a);
 } 
