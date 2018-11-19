@@ -42,10 +42,11 @@ enum symbol {
 	writesym, readsym, dosym, callsym, constsym,
 	varsym, procsym, lbrace, rbrace, lbracket,
 	rbracket, equal, mainsym, elsesym, intsym,
-	charsym, selfplus,selfminus,repeatsym,untilsym,mod
+	charsym, selfplus,selfminus,repeatsym,untilsym,
+	mod
 };
 
-#define symnum 42
+#define symnum 46
 
 /* 符号表中的类型 */
 enum object {
@@ -122,7 +123,7 @@ int term(int *ptx);
 int factor(int *ptx);
 void listcode(int cx0);
 void listall();
-int position(char* idt, int tx);
+int position(char* idt, int tx, int idx);
 void enter(enum object k, int* ptx, int idx, int* pdx);
 void interpret();
 
@@ -774,13 +775,16 @@ void statement(int *ptx)
 				getsym();
 				expression(ptx);
 
-				gen(jpc, 0, cx + 1);	//条件跳转，当不满足条件时，跳出循环
-										//（因为下一条是紧跟着的条件跳转，所以cx+1为循环的下面一条指令）
-				gen(jmp, 0, cx0);	//无条件跳转，调回到repeat开始的地方
+				gen(jpc, 0, cx0);	//条件跳转，当不满足条件时,继续跳回循环
 
 				if (sym == rparen)
 				{
 					getsym();
+					if (sym == semicolon) {
+						getsym();
+					}
+					else
+						error(136);	//右括号后应该跟分号
 				}
 				else
 				{
@@ -881,13 +885,24 @@ int expression(int *ptx)
 	int i;
 	int ans;
 	int tem;
-	if (sym == selfminus || sym == selfplus)	//++a形式
+
+	bool flag[symnum];	//进行符号的临时标记
+	for (i = 0; i<symnum; i++)
+	{
+		flag[i] = false;
+	}
+
+	if (sym == selfminus || sym == selfplus) {	//++a形式,先读入++，等到读入ident时在进行指令的生成。
+		flag[selfminus] = (sym == selfminus) ? true : false;
+		flag[selfplus] = (sym == selfplus) ? true : false;
 		getsym();
+	}
 	if (sym == lparen || sym == number) {
 		ans = simple_expr(ptx);
 		return ans;
 	}
 	else if (sym == ident) {
+
 		int single_ident_flag = 1;
 		i = position(id, *ptx, 0);/* 查找标识符在符号表中的位置 */
 		if (i == 0)
@@ -900,6 +915,10 @@ int expression(int *ptx)
 			tem = expression(ptx);
 
 			i = position(id, *ptx, tem);/* 查找数组标识符在符号表中的位置 */
+			if (i == 0)
+			{
+				error(126);	/* 标识符未声明 */
+			}
 
 			if (sym == rbracket)		//右中括号，数组结束
 			{
@@ -915,19 +934,45 @@ int expression(int *ptx)
 			if(i!=0)
 				gen(sto, 0, table[i].adr);
 		}
-		if (single_ident_flag == 1)
+		if (single_ident_flag == 1) {
 			gen(lod, 0, table[i].adr);
+			if (flag[selfplus]) {		//++a,最后的栈顶为a+1
+				gen(lit, 0, 1);				//原来栈顶为a,将1放入栈顶
+				gen(opr, 0, 2);				//将a和1相加，得到栈顶a+1
+				gen(sto, 0, table[i].adr);	//将栈顶a+1存入a
+				gen(lod, 0, table[i].adr);	//再将a置于栈顶，此时的a是a+1
+				flag[selfplus] = false;	//清除标记
+			}
+			if (flag[selfminus]) {		//--a，同上
+				gen(lit, 0, 1);
+				gen(opr, 0, 3);
+				gen(sto, 0, table[i].adr);
+				gen(lod, 0, table[i].adr);
+				flag[selfminus] = false;
+			}
+		}
+
+
 		if(sym == selfplus || sym == selfminus) {		//expression 扩展： expression: var++ | var--
+			if (sym == selfplus) {		//a++,最后栈顶为原来的a
+				gen(lod, 0, table[i].adr);	//原来栈顶为a,再次将a置于栈顶，此时栈顶前两个都为a
+				gen(lit, 0, 1);				//将1置于栈顶
+				gen(opr, 0, 2);				//将栈顶前两个数相加，得到栈顶a+1,次栈顶为a
+				gen(sto, 0, table[i].adr);	//将栈顶a+1存入a,此时栈顶是原来的a
+			}
+			else {						//a--,同a++
+				gen(lod, 0, table[i].adr);	
+				gen(lit, 0, 1);
+				gen(opr, 0, 3);
+				gen(sto, 0, table[i].adr);
+			}
+
 			single_ident_flag = 0;
 			getsym();
 		}
 
 		if (sym == times || sym == slash || sym == mod || sym == plus || sym == minus ) {
-			bool flag[symnum];	//进行符号的临时标记
-			for (i = 0; i<symnum; i++)
-			{
-				flag[i] = false;
-			}
+
 			single_ident_flag = 0;
 			do {
 				flag[plus] = (sym == plus) ? true : false;	//进行记录+、或者-号，在读完term后进行生成指令代码
@@ -983,12 +1028,8 @@ int expression(int *ptx)
 	else {
 		error(128);	//first（expression）只能是ident、lparen、number
 	}
-	
-	bool flag[symnum];	//进行符号的临时标记
-	for (i = 0; i<symnum; i++)
-	{
-		flag[i] = false;
-	}
+
+
 	if (sym == gtr || sym == lss || sym == geq || sym == leq || sym == equal || sym == nequal) {
 		flag[gtr] = (sym == gtr) ? true : false;
 		flag[lss] = (sym == lss) ? true : false;
@@ -1144,6 +1185,12 @@ int factor(int *ptx)
 {
 	int i;
 	int tem;
+	bool flag[symnum];	//进行符号的临时标记
+	for (i = 0; i<symnum; i++)
+	{
+		flag[i] = false;
+	}
+
 	if (sym == lparen) {
 		getsym();
 		tem = expression(ptx);
@@ -1166,7 +1213,10 @@ int factor(int *ptx)
 			tem = expression(ptx);
 
 			i = position(id, *ptx, tem);/* 查找数组标识符在符号表中的位置 */
-
+			if (i == 0)
+			{
+				error(130);	/* 标识符未声明 */
+			}
 			if (sym == rbracket)		//右中括号，数组结束
 			{
 				getsym();
@@ -1176,6 +1226,18 @@ int factor(int *ptx)
 		}
 		
 		if (sym == selfminus || sym == selfplus) {		//a++ 形式
+			if (sym == selfplus) {		//a++,最后栈顶为原来的a
+				gen(lod, 0, table[i].adr);	//原来栈顶为a,再次将a置于栈顶，此时栈顶前两个都为a
+				gen(lit, 0, 1);				//将1置于栈顶
+				gen(opr, 0, 2);				//将栈顶前两个数相加，得到栈顶a+1,次栈顶为a
+				gen(sto, 0, table[i].adr);	//将栈顶a+1存入a,此时栈顶是原来的a
+			}
+			else {						//a--,同a++
+				gen(lod, 0, table[i].adr);
+				gen(lit, 0, 1);
+				gen(opr, 0, 3);
+				gen(sto, 0, table[i].adr);
+			}
 			getsym();
 		}
 
@@ -1188,9 +1250,11 @@ int factor(int *ptx)
 		return num;
 	}
 	else if (sym == selfminus || sym == selfplus) {	//++a 形式
+		flag[selfminus] = (sym == selfminus) ? true : false;
+		flag[selfplus] = (sym == selfplus) ? true : false;
 		getsym();
 		if (sym == ident) {
-			i = position(id, *ptx);/* 查找标识符在符号表中的位置 */
+			i = position(id, *ptx, 0);/* 查找标识符在符号表中的位置 */
 			if (i == 0)
 			{
 				error(132);	/* 标识符未声明 */
@@ -1198,7 +1262,12 @@ int factor(int *ptx)
 			getsym();
 			if (sym == lbracket) {	//左中括号，是数组形式
 				getsym();
-				expression(ptx);
+				tem = expression(ptx);
+
+				i = position(id, *ptx, tem);/* 查找数组标识符在符号表中的位置 */
+				if (i == 0)
+					error(132);	/* 标识符未声明 */
+
 				if (sym == rbracket)		//右中括号，数组结束
 				{
 					getsym();
@@ -1206,6 +1275,22 @@ int factor(int *ptx)
 				else
 					error(133);	//数组右边必须是右中括号
 			}
+
+			if (flag[selfplus]) {		//++a,最后的栈顶为a+1
+				gen(lit, 0, 1);				//原来栈顶为a,将1放入栈顶
+				gen(opr, 0, 2);				//将a和1相加，得到栈顶a+1
+				gen(sto, 0, table[i].adr);	//将栈顶a+1存入a
+				gen(lod, 0, table[i].adr);	//再将a置于栈顶，此时的a是a+1
+				flag[selfplus] = false;	//清除标记
+			}
+			if (flag[selfminus]) {		//--a，同上
+				gen(lit, 0, 1);
+				gen(opr, 0, 3);
+				gen(sto, 0, table[i].adr);
+				gen(lod, 0, table[i].adr);
+				flag[selfminus] = false;
+			}
+
 		}
 		else
 			error(134);	//++、--后应为var
