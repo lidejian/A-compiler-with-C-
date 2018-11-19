@@ -882,185 +882,58 @@ void statement(int *ptx)
 
 int expression(int *ptx)
 {
-	int i;
-	int ans;
-	int tem;
+	int i,tem;
+	int express_flag=0;
+	int tll = ll;
+	int tcc = cc;
+	int tsym = sym;
+	int tch = ch;
 
-	bool flag[symnum];	//进行符号的临时标记
-	for (i = 0; i<symnum; i++)
-	{
-		flag[i] = false;
-	}
-
-	if (sym == selfminus || sym == selfplus) {	//++a形式,先读入++，等到读入ident时在进行指令的生成。
-		flag[selfminus] = (sym == selfminus) ? true : false;
-		flag[selfplus] = (sym == selfplus) ? true : false;
+	if (sym == ident) {
 		getsym();
-	}
-	if (sym == lparen || sym == number) {
-		ans = simple_expr(ptx);
-		return ans;
-	}
-	else if (sym == ident) {
-
-		int single_ident_flag = 1;
-		i = position(id, *ptx, 0);/* 查找标识符在符号表中的位置 */
-		if (i == 0)
-		{
-			error(126);	/* 标识符未声明 */
+		if (sym == eql) {
+			express_flag = 1;
 		}
-		getsym();
-		if (sym == lbracket) {	//左中括号，是数组形式
-			getsym();
+		if (sym == lbracket) {
+			while (sym != rbracket)
+				getsym();
+			if (sym == eql)
+				express_flag = 1;
+			else
+				error(0);	//左中括号没有右中括号与之结合
+		}
+	}
+
+	ll = tll;
+	cc = tcc;
+	sym = tsym;
+	ch = tch;
+
+
+	if (express_flag) {
+		i = position(id, *ptx, 0);
+		if (i == 0)
+			error(126);	/* 标识符未声明 */
+		getsym();	//已经确定前面是ident，所以读入下一个
+		if (sym == lbracket) {	//如果ident下一个是左中括号，则进入数组形式
 			tem = expression(ptx);
-
-			i = position(id, *ptx, tem);/* 查找数组标识符在符号表中的位置 */
+			i = position(id, *ptx, tem);
 			if (i == 0)
-			{
 				error(126);	/* 标识符未声明 */
-			}
-
-			if (sym == rbracket)		//右中括号，数组结束
-			{
+			if (sym == rbracket) {
 				getsym();
 			}
 			else
-				error(127);	//数组右边必须是右中括号
+				error(0);	//应有右括号与左括号匹配
 		}
-		if (sym == eql) {	//expression之一
-			single_ident_flag = 0;
+		if (sym == eql) {
 			getsym();
 			expression(ptx);
-			if(i!=0)
-				gen(sto, 0, table[i].adr);
 		}
-		if (single_ident_flag == 1) {
-			gen(lod, 0, table[i].adr);
-			if (flag[selfplus]) {		//++a,最后的栈顶为a+1
-				gen(lit, 0, 1);				//原来栈顶为a,将1放入栈顶
-				gen(opr, 0, 2);				//将a和1相加，得到栈顶a+1
-				gen(sto, 0, table[i].adr);	//将栈顶a+1存入a
-				gen(lod, 0, table[i].adr);	//再将a置于栈顶，此时的a是a+1
-				flag[selfplus] = false;	//清除标记
-			}
-			if (flag[selfminus]) {		//--a，同上
-				gen(lit, 0, 1);
-				gen(opr, 0, 3);
-				gen(sto, 0, table[i].adr);
-				gen(lod, 0, table[i].adr);
-				flag[selfminus] = false;
-			}
-		}
-
-
-		if(sym == selfplus || sym == selfminus) {		//expression 扩展： expression: var++ | var--
-			if (sym == selfplus) {		//a++,最后栈顶为原来的a
-				gen(lod, 0, table[i].adr);	//原来栈顶为a,再次将a置于栈顶，此时栈顶前两个都为a
-				gen(lit, 0, 1);				//将1置于栈顶
-				gen(opr, 0, 2);				//将栈顶前两个数相加，得到栈顶a+1,次栈顶为a
-				gen(sto, 0, table[i].adr);	//将栈顶a+1存入a,此时栈顶是原来的a
-			}
-			else {						//a--,同a++
-				gen(lod, 0, table[i].adr);	
-				gen(lit, 0, 1);
-				gen(opr, 0, 3);
-				gen(sto, 0, table[i].adr);
-			}
-
-			single_ident_flag = 0;
-			getsym();
-		}
-
-		if (sym == times || sym == slash || sym == mod || sym == plus || sym == minus ) {
-
-			single_ident_flag = 0;
-			do {
-				flag[plus] = (sym == plus) ? true : false;	//进行记录+、或者-号，在读完term后进行生成指令代码
-				flag[minus] = (sym == minus) ? true : false;
-				flag[times] = (sym == times) ? true : false;
-				flag[slash] = (sym == slash) ? true : false;
-				flag[mod] = (sym == mod) ? true : false;
-
-				getsym();
-				term(ptx);
-
-				if (flag[plus])
-					gen(opr, 0, 2);	/* 生成加法指令 */
-				if (flag[minus])
-					gen(opr, 0, 3);	/* 生成减法指令 */
-				if (flag[times])
-					gen(opr, 0, 4);	/* 生成乘法指令 */
-				if (flag[slash])
-					gen(opr, 0, 5);	/* 生成除法指令 */
-				if (flag[mod])
-					gen(opr, 0, 17);	/* 生成取模指令 */
-
-				flag[plus] = false;		//将标记进行还原
-				flag[minus] = false;
-				flag[times] = false;
-				flag[slash] = false;
-				flag[mod] = false;
-
-				while (sym == times || sym == slash || sym == mod) {
-					flag[times] = (sym == times) ? true : false;
-					flag[slash] = (sym == slash) ? true : false;
-					flag[mod] = (sym == mod) ? true : false;
-
-					getsym();
-					factor(ptx);
-
-					if(flag[times])
-						gen(opr, 0, 4);	/* 生成乘法指令 */
-					if(flag[slash])
-						gen(opr, 0, 5);	/* 生成除法指令 */
-					if(flag[mod])
-						gen(opr, 0, 17);	/* 生成取模指令 */
-
-					flag[times] = false;
-					flag[slash] = false;
-					flag[mod] = false;
-				}
-			} while (sym == plus || sym == minus);
-		}
-		//if(single_ident_flag == 1)	//经测试，为单个ident
-		//	gen(lod, 0, table[i].adr);
+		gen(sto, 0, table[i].adr);
 	}
-	else {
-		error(128);	//first（expression）只能是ident、lparen、number
-	}
-
-
-	if (sym == gtr || sym == lss || sym == geq || sym == leq || sym == equal || sym == nequal) {
-		flag[gtr] = (sym == gtr) ? true : false;
-		flag[lss] = (sym == lss) ? true : false;
-		flag[geq] = (sym == geq) ? true : false;
-		flag[leq] = (sym == leq) ? true : false;
-		flag[equal] = (sym == equal) ? true : false;
-		flag[nequal] = (sym == nequal) ? true : false;
-
-		getsym();
-		additive_expr(ptx);
-
-		if (flag[gtr])
-			gen(opr, 0, 12);	/* 生成大于指令 */
-		if (flag[lss])
-			gen(opr, 0, 10);	/* 生成小于指令 */
-		if (flag[geq])
-			gen(opr, 0, 11);	/* 生成大于等于指令 */
-		if (flag[leq])
-			gen(opr, 0, 13);	/* 生成小于等于指令 */
-		if (flag[equal])
-			gen(opr, 0, 8);		/* 生成判断相等指令 */
-		if (flag[nequal])
-			gen(opr, 0, 9);		/* 生成判断不等指令 */
-
-		flag[gtr] = false;
-		flag[lss] = false;
-		flag[geq] = false;
-		flag[leq] = false;
-		flag[equal] = false;
-		flag[nequal] = false;
-	}
+	else	//不是var=expression格式
+		simple_expr(ptx);
 }
 
 int simple_expr(int *ptx)

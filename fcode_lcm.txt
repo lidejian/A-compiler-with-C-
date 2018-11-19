@@ -34,7 +34,7 @@
 33 lod 0 4	//ta
 34 lod 0 6	//tb
 35 opr 0 4	//ta*tb
-36 lod 0 5	//a
+36 lod 0 3	//a
 37 opr 0 5	//ta*tb的结果/a
 38 opr 0 14	//打出结果
 39 opr 0 15	//\n
