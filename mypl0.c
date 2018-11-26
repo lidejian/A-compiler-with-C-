@@ -58,9 +58,10 @@ enum object {
 enum fct {
 	lit, opr, lod,
 	sto, cal, ini,
-	jmp, jpc,
+	jmp, jpc, sta,
+	loa, cpy, chg,
 };
-#define fctnum 8
+#define fctnum 12
 
 /* 虚拟机代码结构 */
 struct instruction
@@ -75,6 +76,7 @@ bool tableswitch;  /* 显示符号表与否 */
 char ch;            /* 存放当前读取的字符，getch 使用 */
 enum symbol sym;    /* 当前的符号 */
 char id[al + 1];      /* 当前ident，多出的一个字节用于存放0 */
+char tem_id[al + 1];	/*存放临时id的副本，以便数组查找使用*/
 int num;            /* 当前number */
 int cc, ll;         /* getch使用的计数器，cc表示当前字符(ch)的位置，ll为line length缓存区长度 */
 int cx;             /* 虚拟机代码指针, 取值范围[0, cxmax-1]*/
@@ -105,6 +107,8 @@ FILE* fcode;    /* 输出虚拟机代码 */
 FILE* foutput;  /* 输出文件及出错示意（如有错）、各行对应的生成代码首地址（如无错） */
 FILE* fresult;  /* 输出执行结果 */
 char fname[al] = "test.txt";			//------------------------------------调试使用，最后修改-----------------------------------
+
+int is_char_flag = 0;
 
 
 void error(int n);
@@ -310,6 +314,10 @@ void init()
 	strcpy(&(mnemonic[ini][0]), "int");
 	strcpy(&(mnemonic[jmp][0]), "jmp");
 	strcpy(&(mnemonic[jpc][0]), "jpc");
+	strcpy(&(mnemonic[sta][0]), "sta");
+	strcpy(&(mnemonic[loa][0]), "loa");
+	strcpy(&(mnemonic[cpy][0]), "cpy");
+	strcpy(&(mnemonic[chg][0]), "chg");
 }
 
 
@@ -613,7 +621,13 @@ int declaration_list(int tx, int dx)
 			switch (table[i].kind)
 			{
 			case integer:
-				printf("    %d var   %s ", i, table[i].name);
+				printf("    %d int   %s ", i, table[i].name);
+				printf("addr=%d\n", table[i].adr);
+				fprintf(ftable, "    %d var   %s ", i, table[i].name);
+				fprintf(ftable, "addr=%d\n", table[i].adr);
+				break;
+			case character:
+				printf("    %d char   %s ", i, table[i].name);
 				printf("addr=%d\n", table[i].adr);
 				fprintf(ftable, "    %d var   %s ", i, table[i].name);
 				fprintf(ftable, "addr=%d\n", table[i].adr);
@@ -695,7 +709,7 @@ void declaration_stat(int* ptx,int *pdx)
 void statement_list(int* ptx)
 {
 	while (sym == ifsym || sym == whilesym || sym == repeatsym || sym == readsym || sym == writesym ||
-		sym == lparen || sym == semicolon || sym == ident || sym == number)
+		sym == lparen || sym == semicolon || sym == ident || sym == number || sym == selfminus || sym == selfplus)
 	{
 		statement(ptx);
 	}
@@ -721,12 +735,15 @@ void statement(int *ptx)
 			{
 				getsym();
 				statement(ptx);
+				cx1 = cx;
+				gen(jmp, 0, 0);	//if执行完之后跳转到else之外；先填充0，后面翻译完statement后进行回填
+				code[cx0].a = cx;	//进行if不满足条件的回填
 				if (sym == elsesym)
 				{
 					getsym();
 					statement(ptx);
+					code[cx1].a = cx;	//进行if执行完的回填
 				}
-				code[cx0].a = cx ;	//进行if不满足条件的回填
 			}
 			else
 				error(112);	//expression后应为右括号
@@ -810,12 +827,16 @@ void statement(int *ptx)
 				error(119);	//标识符未声明
 			}
 			getsym();
+			int bracket_flag = 0;
+			int bracket_i = 0;
 			if (sym == lbracket) {	//左中括号，是数组形式
+				bracket_flag = 1;
+				strcpy(tem_id, id);
 				getsym();
 				tem = expression(ptx);
-
-				i = position(id, *ptx, tem);
-
+				bracket_i = position(tem_id, *ptx, tem);
+				if (bracket_i == 0)
+					error(126);	/* 标识符未声明 */
 				if (sym == rbracket)		//右中括号，数组结束
 				{
 					getsym();
@@ -825,7 +846,10 @@ void statement(int *ptx)
 			}
 
 			gen(opr, 0, 16);	/* 生成输入指令，读取值到栈顶 */
-			gen(sto, 0, table[i].adr);	/* 将栈顶内容送入变量单元中 */
+			if (bracket_flag != 0)
+				gen(sta, 0, table[i].adr);
+			else
+				gen(sto, 0, table[i].adr);/* 将栈顶内容送入变量单元中 */
 
 		}
 		else
@@ -842,7 +866,10 @@ void statement(int *ptx)
 	{
 		getsym();
 		expression(ptx);
-		gen(opr, 0, 14);	/* 生成输出指令，输出栈顶的值 */
+		if(is_char_flag)
+			gen(opr, 0, 18);	/* 生成输出字符指令，输出栈顶的值 */
+		else
+			gen(opr, 0, 14);	/* 生成输出数字指令，输出栈顶的值 */
 		gen(opr, 0, 15);	/* 生成换行指令 */
 		if (sym == semicolon)
 		{
@@ -882,14 +909,26 @@ void statement(int *ptx)
 
 int expression(int *ptx)
 {
+	static equal_flag = 0;	//利用静态变量实现连续赋值
 	int i,tem;
 	int express_flag=0;
 	int tll = ll;
 	int tcc = cc;
 	int tsym = sym;
 	int tch = ch;
+	char tid[al + 1];
+	strcpy(tid, id);
+	int ans;
 
 	if (sym == ident) {
+		i = position(id, *ptx, 0);
+		if (i == 0)
+			error(126);	/* 标识符未声明 */
+		if (table[i].kind == character)
+			is_char_flag = 1;
+		else
+			is_char_flag = 0;
+
 		getsym();
 		if (sym == eql) {
 			express_flag = 1;
@@ -897,10 +936,11 @@ int expression(int *ptx)
 		if (sym == lbracket) {
 			while (sym != rbracket)
 				getsym();
+			getsym();
 			if (sym == eql)
 				express_flag = 1;
-			else
-				error(0);	//左中括号没有右中括号与之结合
+			//else
+			//	error(0);	//左中括号没有右中括号与之结合
 		}
 	}
 
@@ -908,17 +948,24 @@ int expression(int *ptx)
 	cc = tcc;
 	sym = tsym;
 	ch = tch;
+	strcpy(id, tid);
 
+	int bracket_flag = 0;
+	int bracket_i = 0;
 
 	if (express_flag) {
 		i = position(id, *ptx, 0);
 		if (i == 0)
 			error(126);	/* 标识符未声明 */
+
 		getsym();	//已经确定前面是ident，所以读入下一个
 		if (sym == lbracket) {	//如果ident下一个是左中括号，则进入数组形式
+			bracket_flag = 1;
+			strcpy(tem_id, id);
+			getsym();
 			tem = expression(ptx);
-			i = position(id, *ptx, tem);
-			if (i == 0)
+			bracket_i = position(tem_id, *ptx, tem);
+			if (bracket_i == 0)
 				error(126);	/* 标识符未声明 */
 			if (sym == rbracket) {
 				getsym();
@@ -926,14 +973,26 @@ int expression(int *ptx)
 			else
 				error(0);	//应有右括号与左括号匹配
 		}
+		//if(bracket_flag != 0)
+		//	gen(lod, 0, table[i].adr);
 		if (sym == eql) {
+			equal_flag++;
 			getsym();
-			expression(ptx);
+			ans = expression(ptx);
+			table[i].val = ans;
 		}
-		gen(sto, 0, table[i].adr);
+		if (bracket_flag != 0) {
+			gen(sta, 0, table[i].adr);
+		}
+		else
+			gen(sto, 0, table[i].adr);
+		equal_flag--;
+		if (equal_flag != 0)
+			gen(lod, 0, table[i].adr);
 	}
 	else	//不是var=expression格式
-		simple_expr(ptx);
+		ans = simple_expr(ptx);
+	return ans;
 }
 
 int simple_expr(int *ptx)
@@ -1058,6 +1117,7 @@ int factor(int *ptx)
 {
 	int i;
 	int tem;
+
 	bool flag[symnum];	//进行符号的临时标记
 	for (i = 0; i<symnum; i++)
 	{
@@ -1081,12 +1141,15 @@ int factor(int *ptx)
 			error(130);	/* 标识符未声明 */
 		}
 		getsym();
+		int bracket_flag = 0;
+		int bracket_i = 0;
 		if (sym == lbracket) {	//左中括号，是数组形式
+			bracket_flag = 1;
+			strcpy(tem_id, id); 
 			getsym();
 			tem = expression(ptx);
-
-			i = position(id, *ptx, tem);/* 查找数组标识符在符号表中的位置 */
-			if (i == 0)
+			bracket_i = position(tem_id, *ptx, tem);/* 查找数组标识符在符号表中的位置 */
+			if (bracket_i == 0)
 			{
 				error(130);	/* 标识符未声明 */
 			}
@@ -1098,24 +1161,51 @@ int factor(int *ptx)
 				error(131);	//数组右边必须是右中括号
 		}
 		
-		if (sym == selfminus || sym == selfplus) {		//a++ 形式
-			if (sym == selfplus) {		//a++,最后栈顶为原来的a
-				gen(lod, 0, table[i].adr);	//原来栈顶为a,再次将a置于栈顶，此时栈顶前两个都为a
-				gen(lit, 0, 1);				//将1置于栈顶
-				gen(opr, 0, 2);				//将栈顶前两个数相加，得到栈顶a+1,次栈顶为a
-				gen(sto, 0, table[i].adr);	//将栈顶a+1存入a,此时栈顶是原来的a
+		if (sym == selfminus || sym == selfplus) {		//a++ 形式		注释讲a++
+			if (sym == selfplus) {		//a++,最后栈顶为原来的a			此时栈顶		...a
+				if (bracket_flag != 0) {
+					gen(cpy, 0, 0);	
+					gen(loa, 0, table[i].adr);
+					gen(cpy, 0, 0);
+				}
+				else
+					gen(lod, 0, table[i].adr);	//再次将a置于栈顶			执行完栈顶：	...a a
+				gen(lit, 0, 1);				//将1置于栈顶				执行完栈顶：	...a a 1
+				gen(opr, 0, 2);				//将栈顶前两个数相加			执行完栈顶：	...a a+1
+				if (bracket_flag != 0) {
+					gen(chg, 0, 0);
+					gen(sta, 0, table[i].adr);
+				}
+				else
+					gen(sto, 0, table[i].adr);//将栈顶a+1存入a			执行完栈顶：	...a (将a+1存入a,此时栈顶仍是原来的a)
+
+
+
 			}
-			else {						//a--,同a++
-				gen(lod, 0, table[i].adr);
-				gen(lit, 0, 1);
-				gen(opr, 0, 3);
-				gen(sto, 0, table[i].adr);
+			else {						//a--,同a++,						注释讲a[2]--
+				if (bracket_flag != 0) {	//a[2]--					此时栈顶		...2
+					gen(cpy, 0, 0);	//将栈顶复制一下						执行完栈顶：	...2 2
+					gen(loa, 0, table[i].adr);	//数组形式的lod--->loa	执行完栈顶：	...2 a[2]
+					gen(cpy, 0, 0);	//将栈顶复制一下						执行完栈顶：	...2 a[2] a[2] 
+				}
+				else
+					gen(lod, 0, table[i].adr);
+				gen(lit, 0, 1);				//将1置于栈顶				执行完栈顶：	...2 a[2] a[2] 1
+				gen(opr, 0, 3);				//将栈顶前两个数相加			执行完栈顶： ...2 a[2] a[2]-1
+				if (bracket_flag != 0) {
+					gen(chg, 0, 0);	//交换次栈顶和次次栈顶				执行完栈顶：	...a[2] 2 a[2]-1
+					gen(sta, 0, table[i].adr);	//						执行完栈顶：	...a[2]  (将a[2]-1存放进a[2]的地址了，栈顶元素为a[2])
+				}
+				else
+					gen(sto, 0, table[i].adr);//将栈顶a+1存入a,此时栈顶是原来的a
 			}
 			getsym();
 		}
-
-		gen(lod, 0, table[i].adr);
-
+		if (bracket_flag != 0)
+			gen(loa, 0, table[i].adr);	//数组形式的lod--->loa
+		else
+			gen(lod, 0, table[i].adr);	//普通变量的lod
+		return table[i].val;
 	}
 	else if (sym == number) {
 		gen(lit, 0, num);	/* 生成立即数指令 */
@@ -1133,12 +1223,17 @@ int factor(int *ptx)
 				error(132);	/* 标识符未声明 */
 			}
 			getsym();
+
+			int bracket_flag = 0;
+			int bracket_i = 0;
+
 			if (sym == lbracket) {	//左中括号，是数组形式
+				bracket_flag = 1;
+				strcpy(tem_id, id);
 				getsym();
 				tem = expression(ptx);
-
-				i = position(id, *ptx, tem);/* 查找数组标识符在符号表中的位置 */
-				if (i == 0)
+				bracket_i = position(tem_id, *ptx, tem);/* 查找数组标识符在符号表中的位置 */
+				if (bracket_i == 0)
 					error(132);	/* 标识符未声明 */
 
 				if (sym == rbracket)		//右中括号，数组结束
@@ -1149,18 +1244,48 @@ int factor(int *ptx)
 					error(133);	//数组右边必须是右中括号
 			}
 
-			if (flag[selfplus]) {		//++a,最后的栈顶为a+1
-				gen(lit, 0, 1);				//原来栈顶为a,将1放入栈顶
-				gen(opr, 0, 2);				//将a和1相加，得到栈顶a+1
-				gen(sto, 0, table[i].adr);	//将栈顶a+1存入a
-				gen(lod, 0, table[i].adr);	//再将a置于栈顶，此时的a是a+1
+			if (flag[selfplus]) {		//++a,最后的栈顶为a+1						此时栈顶		...
+				if (bracket_flag != 0) {
+					gen(cpy, 0, 0);
+					gen(cpy, 0, 0);
+					gen(loa, 0, table[i].adr);
+				}
+				else {
+					gen(lod, 0, table[i].adr);//								执行完栈顶：	...a
+				}
+				gen(lit, 0, 1);				//原来栈顶为a,将1放入栈顶				执行完栈顶：	...a 1
+				gen(opr, 0, 2);				//将a和1相加，得到栈顶a+1				执行完栈顶：	...a+1
+				if (bracket_flag != 0) {
+					gen(sta, 0, table[i].adr);
+					gen(loa, 0, table[i].adr);
+				}
+				else {
+					gen(sto, 0, table[i].adr);	//将栈顶a+1存入a					执行完栈顶：	...		(将a+1存入a)
+					gen(lod, 0, table[i].adr);	//再将a置于栈顶，此时的a是a+1		执行完栈顶：	...a+1	(此时在lod a,得到的是a+1的值)
+				}
 				flag[selfplus] = false;	//清除标记
+
+
 			}
-			if (flag[selfminus]) {		//--a，同上
-				gen(lit, 0, 1);
-				gen(opr, 0, 3);
-				gen(sto, 0, table[i].adr);
-				gen(lod, 0, table[i].adr);
+			if (flag[selfminus]) {		//--a，同上			注释解释a[3]--;		此时栈顶		...3
+				if (bracket_flag != 0) {
+					gen(cpy, 0, 0);			//复制栈顶							执行完栈顶：	...3 3
+					gen(cpy, 0, 0);			//复制栈顶							执行完栈顶：	...3 3 3
+					gen(loa, 0, table[i].adr);//由3数组a[3]的值					执行完栈顶：	...3 3 a[3]
+				}
+				else {
+					gen(lod, 0, table[i].adr);
+				}
+				gen(lit, 0, 1);				//将1放入栈顶						执行完栈顶：	...3 3 a[3] 1
+				gen(opr, 0, 3);				//将a和1相减，得到栈顶a-1				执行完栈顶：	...3 3 a[3]-1
+				if (bracket_flag != 0) {
+					gen(sta, 0, table[i].adr);	//将栈顶存入a[3]					执行完栈顶：	...3   (此时a[3]的值已经是a[3]-1)
+					gen(loa, 0, table[i].adr);	//由3数组a[3]的值				执行完栈顶：	...a[3]	(此时的栈顶a[3]已经是a[3]-1了)
+				}
+				else {
+					gen(sto, 0, table[i].adr);
+					gen(lod, 0, table[i].adr);
+				}
 				flag[selfminus] = false;
 			}
 
@@ -1197,6 +1322,10 @@ void enter(enum object k, int* ptx, int idx, int *pdx)
 			table[(*ptx)].adr = (*pdx);
 			(*pdx)++;
 			break;
+		case character:	/* 变量 */
+			table[(*ptx)].adr = (*pdx);
+			(*pdx)++;
+			break;
 		}
 	}
 }
@@ -1212,6 +1341,7 @@ int position(char* id, int tx, int idx)
 {
 	int i;
 	strcpy(table[0].name, id);
+	table[0].idx = idx;
 	i = tx;
 	while (strcmp(table[i].name, id) != 0 || table[i].idx!=idx)
 	{
@@ -1352,15 +1482,27 @@ void interpret()
 				t = t - 1;
 				s[t] = s[t] % s[t + 1];
 				break;
+			case 18:/* 栈顶字符值输出 */
+				printf("%c", s[t]);
+				fprintf(fresult, "%c", s[t]);
+				t = t - 1;
+				break;
 			}
 			break;
 		case lod:	/* 取相对当前过程的数据基地址为a的内存的值到栈顶 */
 			t = t + 1;
 			s[t] = s[ 1 + i.a];
 			break;
+		case loa:	/* 将栈顶变为地址为a,偏移为栈顶的值   执行前栈顶：...3   执行后栈顶：...a[3]  即从3得到a[3]的值  */
+			s[t] = s[1 + s[t] + i.a];
+			break;
 		case sto:	/* 栈顶的值存到相对当前过程的数据基地址为a的内存 */
 			s[1+i.a] = s[t];
 			t = t - 1;
+			break;
+		case sta:	/* 栈顶的值存入地址为次栈顶的内存		执行前栈顶：...3 999   执行后栈顶：...  将999存入a[3]   */	
+			s[1 + s[t-1] + i.a] = s[t];
+			t = t - 2;
 			break;
 		case ini:	/* 在数据栈中为被调用的过程开辟a个单元的数据区 */
 			t = t + i.a;
@@ -1372,6 +1514,15 @@ void interpret()
 			if (s[t] == 0)
 				p = i.a;
 			t = t - 1;
+			break;
+		case cpy:	/* 将栈顶复制一下，放入栈顶 */
+			s[t + 1] = s[t];
+			t = t + 1;
+			break;
+		case chg:	/* 将次栈顶和次次栈顶交换 */
+			s[t + 1] = s[t - 1];	//利用s[t+1]作为临时变量交换次栈顶s[t-1]和次次栈顶s[t-2]
+			s[t - 1] = s[t - 2];
+			s[t - 2] = s[t + 1];
 			break;
 		}
 	} while (p != 0);
