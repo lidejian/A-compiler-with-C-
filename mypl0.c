@@ -1160,7 +1160,12 @@ int factor(int *ptx)
 			else
 				error(131);	//数组右边必须是右中括号
 		}
-		
+
+		if (bracket_flag != 0)
+			gen(loa, 0, table[i].adr);	//数组形式的lod--->loa
+		else
+			gen(lod, 0, table[i].adr);	//普通变量的lod
+
 		if (sym == selfminus || sym == selfplus) {		//a++ 形式		注释讲a++
 			if (sym == selfplus) {		//a++,最后栈顶为原来的a			此时栈顶		...a
 				if (bracket_flag != 0) {
@@ -1201,10 +1206,7 @@ int factor(int *ptx)
 			}
 			getsym();
 		}
-		if (bracket_flag != 0)
-			gen(loa, 0, table[i].adr);	//数组形式的lod--->loa
-		else
-			gen(lod, 0, table[i].adr);	//普通变量的lod
+
 		return table[i].val;
 	}
 	else if (sym == number) {
