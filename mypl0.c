@@ -89,14 +89,14 @@ enum symbol ssym[256];      /* 单字符的符号值 */
 char mnemonic[fctnum][5];   /* 虚拟机代码指令名称 */
 
 
-							/* 符号表结构 */
+/* 符号表结构 */
 struct tablestruct
 {
 	char name[al];	    /* 名字 */
 	enum object kind;	/* 类型：int，char */
 	int idx;			/* 如果是数组，存放数组下标 */
-	int val;            /* 数值，仅const使用 */
-	int adr;            /* 地址，仅const不使用 */
+	int val;            /* 数值 */
+	int adr;            /* 地址 */
 };
 
 struct tablestruct table[txmax]; /* 符号表 */
@@ -264,6 +264,7 @@ void init()
 
 
 	/* 设置保留字名字,按照字母顺序，便于二分查找 */
+
 	strcpy(&(word[0][0]), "begin");
 	strcpy(&(word[1][0]), "call");
 	strcpy(&(word[2][0]), "char");
@@ -344,7 +345,7 @@ void error(int n)
 * 被函数getsym调用
 * 返回值：
 *	0 正常返回
-*	1 文件结尾
+*	-1 文件结尾
 */
 int getch()
 {
@@ -707,8 +708,8 @@ void declaration_stat(int* ptx,int *pdx)
 
 
 void statement_list(int* ptx)
-{
-	while (sym == ifsym || sym == whilesym || sym == repeatsym || sym == readsym || sym == writesym ||
+{ 
+	while (sym == ifsym || sym == whilesym || sym == repeatsym || sym == readsym || sym == writesym || sym == lbrace ||
 		sym == lparen || sym == semicolon || sym == ident || sym == number || sym == selfminus || sym == selfplus)
 	{
 		statement(ptx);
@@ -742,8 +743,9 @@ void statement(int *ptx)
 				{
 					getsym();
 					statement(ptx);
-					code[cx1].a = cx;	//进行if执行完的回填
+					
 				}
+				code[cx1].a = cx;	//进行if执行完的回填
 			}
 			else
 				error(112);	//expression后应为右括号
@@ -909,7 +911,7 @@ void statement(int *ptx)
 
 int expression(int *ptx)
 {
-	static equal_flag = 0;	//利用静态变量实现连续赋值
+	static int equal_flag = 0;	//利用静态变量实现连续赋值
 	int i,tem;
 	int express_flag=0;
 	int tll = ll;
@@ -967,6 +969,8 @@ int expression(int *ptx)
 			bracket_i = position(tem_id, *ptx, tem);
 			if (bracket_i == 0)
 				error(126);	/* 标识符未声明 */
+			if (equal_flag)		//如果数组左边存在连等，后续lod的时候需要根据当前的栈顶找到要loa的值，因此复制一遍。
+				gen(cpy, 0, 0);
 			if (sym == rbracket) {
 				getsym();
 			}
@@ -987,8 +991,13 @@ int expression(int *ptx)
 		else
 			gen(sto, 0, table[i].adr);
 		equal_flag--;
-		if (equal_flag != 0)
-			gen(lod, 0, table[i].adr);
+		if (equal_flag != 0) {			//如果存在连等，则继续将
+			if (bracket_flag != 0) {
+				gen(loa, 0, table[i].adr);
+			}
+			else
+				gen(lod, 0, table[i].adr);
+		}
 	}
 	else	//不是var=expression格式
 		ans = simple_expr(ptx);
@@ -1102,7 +1111,7 @@ int term(int *ptx)
 			ans /= t;
 		}
 		if (flag[mod]) {
-			gen(opr, 0, 17);		/* 生成模以指令 */
+			gen(opr, 0, 17);	/* 生成模以指令 */
 			ans %= t;
 		}
 
@@ -1169,36 +1178,31 @@ int factor(int *ptx)
 		if (sym == selfminus || sym == selfplus) {		//a++ 形式		注释讲a++
 			if (sym == selfplus) {		//a++,最后栈顶为原来的a			此时栈顶		...a
 				if (bracket_flag != 0) {
-					gen(cpy, 0, 0);	
-					gen(loa, 0, table[i].adr);
+					gen(lit, 0, tem);
 					gen(cpy, 0, 0);
+					gen(loa, 0, table[i].adr);
 				}
 				else
 					gen(lod, 0, table[i].adr);	//再次将a置于栈顶			执行完栈顶：	...a a
 				gen(lit, 0, 1);				//将1置于栈顶				执行完栈顶：	...a a 1
 				gen(opr, 0, 2);				//将栈顶前两个数相加			执行完栈顶：	...a a+1
 				if (bracket_flag != 0) {
-					gen(chg, 0, 0);
 					gen(sta, 0, table[i].adr);
 				}
 				else
 					gen(sto, 0, table[i].adr);//将栈顶a+1存入a			执行完栈顶：	...a (将a+1存入a,此时栈顶仍是原来的a)
-
-
-
 			}
 			else {						//a--,同a++,						注释讲a[2]--
-				if (bracket_flag != 0) {	//a[2]--					此时栈顶		...2
-					gen(cpy, 0, 0);	//将栈顶复制一下						执行完栈顶：	...2 2
-					gen(loa, 0, table[i].adr);	//数组形式的lod--->loa	执行完栈顶：	...2 a[2]
-					gen(cpy, 0, 0);	//将栈顶复制一下						执行完栈顶：	...2 a[2] a[2] 
+				if (bracket_flag != 0) {	//a[2]--					此时栈顶		...a[2]
+					gen(lit, 0, tem);	//								执行完栈顶	...a[2] 2
+					gen(cpy, 0, 0);	//将栈顶复制一下						执行完栈顶：	...a[2] 2 2
+					gen(loa, 0, table[i].adr);//						执行完栈顶	...a[2] 2 a[2]
 				}
 				else
 					gen(lod, 0, table[i].adr);
-				gen(lit, 0, 1);				//将1置于栈顶				执行完栈顶：	...2 a[2] a[2] 1
-				gen(opr, 0, 3);				//将栈顶前两个数相加			执行完栈顶： ...2 a[2] a[2]-1
+				gen(lit, 0, 1);				//将1置于栈顶				执行完栈顶：	...a[2] 2 a[2] 1
+				gen(opr, 0, 3);				//将栈顶前两个数相加			执行完栈顶： ...a[2] 2 a[2]-1
 				if (bracket_flag != 0) {
-					gen(chg, 0, 0);	//交换次栈顶和次次栈顶				执行完栈顶：	...a[2] 2 a[2]-1
 					gen(sta, 0, table[i].adr);	//						执行完栈顶：	...a[2]  (将a[2]-1存放进a[2]的地址了，栈顶元素为a[2])
 				}
 				else
@@ -1269,7 +1273,7 @@ int factor(int *ptx)
 
 
 			}
-			if (flag[selfminus]) {		//--a，同上			注释解释a[3]--;		此时栈顶		...3
+			if (flag[selfminus]) {		//--a，同上			注释解释--a[3];		此时栈顶		...3
 				if (bracket_flag != 0) {
 					gen(cpy, 0, 0);			//复制栈顶							执行完栈顶：	...3 3
 					gen(cpy, 0, 0);			//复制栈顶							执行完栈顶：	...3 3 3
@@ -1318,6 +1322,7 @@ void enter(enum object k, int* ptx, int idx, int *pdx)
 		strcpy(table[(*ptx)].name, id); /* 符号表的name域记录标识符的名字 */
 		table[(*ptx)].kind = k;
 		table[(*ptx)].idx = i;
+		table[(*ptx)].val = -1;	//将初始值全部初始化为-1，防止初始化为0时对于read的变量当作除数产生错误。
 		switch (k)
 		{
 		case integer:	/* 变量 */
