@@ -21,7 +21,7 @@
 #define true 1
 #define false 0
 
-#define norw 19       /* 保留字个数 */
+#define norw 21       /* 保留字个数 */
 #define txmax 100     /* 符号表容量 */
 #define nmax 14       /* 数字的最大位数 */
 #define al 10         /* 标识符的最大长度 */
@@ -43,15 +43,16 @@ enum symbol {
 	varsym, procsym, lbrace, rbrace, lbracket,
 	rbracket, equal, mainsym, elsesym, intsym,
 	charsym, selfplus, selfminus, repeatsym, untilsym,
-	mod
+	mod,functionsym,returnsym,
 };
 
-#define symnum 46
+#define symnum 48
 
 /* 符号表中的类型 */
 enum object {
 	integer,
 	character,
+	func,
 };
 
 /* 虚拟机代码指令 */
@@ -96,7 +97,9 @@ struct tablestruct
 	enum object kind;	/* 类型：int，char */
 	int idx;			/* 如果是数组，存放数组下标 */
 	int val;            /* 数值 */
+	int level;          /* 所处层 */
 	int adr;            /* 地址 */
+	int size;           /* 需要分配的数据区空间, 仅procedure使用 */
 };
 
 struct tablestruct table[txmax]; /* 符号表 */
@@ -106,7 +109,7 @@ FILE* ftable;	/* 输出符号表 */
 FILE* fcode;    /* 输出虚拟机代码 */
 FILE* foutput;  /* 输出文件及出错示意（如有错）、各行对应的生成代码首地址（如无错） */
 FILE* fresult;  /* 输出执行结果 */
-char fname[al];			//------------------------------------调试使用，最后修改-----------------------------------
+char fname[al]="test.txt";			//------------------------------------调试使用，最后修改-----------------------------------
 
 int is_char_flag = 0;
 int is_minus = 0;
@@ -117,8 +120,11 @@ void getsym();
 int getch();
 void init();
 void gen(enum fct x, int y, int z);
-int declaration_list(int tx, int dx);
-void declaration_stat(int* ptx, int *pdx);
+void functions(int* ptx, int* pdx);
+void function(int* ptx, int* pdx);
+void argument(int *ptx, int *pdx);
+void declaration_list(int* ptx, int* pdx);
+void declaration_stat(int* ptx, int* pdx);
 void statement_list(int* ptx);
 void statement(int *ptx);
 int expression(int *ptx);
@@ -137,7 +143,7 @@ void interpret();
 int main()
 {
 	printf("Input pl/0 file?   ");
-	scanf("%s", fname);		/* 输入文件名 *///------------------------------------调试使用，最后修改-----------------------------------
+	//scanf("%s", fname);		/* 输入文件名 *///------------------------------------调试使用，最后修改-----------------------------------
 
 	if ((fin = fopen(fname, "r")) == NULL)
 	{
@@ -166,12 +172,12 @@ int main()
 		exit(1);
 	}
 
-	printf("List object codes?(Y/N)");	/* 是否输出虚拟机代码 */
+	printf("List object codes?(Y/N)\n");	/* 是否输出虚拟机代码 */
 										//scanf("%s", fname);	//--------------------------------调试---------------------------
 	fname[0] = 'y';
 	listswitch = (fname[0] == 'y' || fname[0] == 'Y');
 
-	printf("List symbol table?(Y/N)");	/* 是否输出符号表 */
+	printf("List symbol table?(Y/N)\n");	/* 是否输出符号表 */
 										//scanf("%s", fname);		//--------------------------------调试---------------------------
 	fname[0] = 'y';
 	tableswitch = (fname[0] == 'y' || fname[0] == 'Y');
@@ -181,15 +187,22 @@ int main()
 	ch = ' ';
 
 	getsym();
+	int tx=0, dx=3;
+	int cx0;
+	cx0 = cx;
+	gen(jmp, 0, 1);		//-----------------
+	functions(&tx, &dx);
 
 	if (sym == mainsym)
 	{
+		code[cx0].a = cx;
 		getsym();
 		if (sym == lbrace)
 		{
 			getsym();
-			int i = declaration_list(0, 3);		/* 处理分程序 */
-			statement_list(&i);		/* 处理分程序 */
+			
+			declaration_list(&tx, &dx);		/* 处理分程序 */
+			statement_list(&tx);		/* 处理分程序 */
 			gen(opr, 0, 0);	                    /* 每个过程出口都要使用的释放数据段指令 */
 			if (sym != rbrace)
 			{
@@ -273,18 +286,20 @@ void init()
 	strcpy(&(word[4][0]), "do");
 	strcpy(&(word[5][0]), "else");
 	strcpy(&(word[6][0]), "end");
-	strcpy(&(word[7][0]), "if");
-	strcpy(&(word[8][0]), "int");
-	strcpy(&(word[9][0]), "main");
-	strcpy(&(word[10][0]), "odd");
-	strcpy(&(word[11][0]), "procedure");
-	strcpy(&(word[12][0]), "read");
-	strcpy(&(word[13][0]), "repeat");
-	strcpy(&(word[14][0]), "then");
-	strcpy(&(word[15][0]), "until");
-	strcpy(&(word[16][0]), "var");
-	strcpy(&(word[17][0]), "while");
-	strcpy(&(word[18][0]), "write");
+	strcpy(&(word[7][0]), "function");
+	strcpy(&(word[8][0]), "if");
+	strcpy(&(word[9][0]), "int");
+	strcpy(&(word[10][0]), "main");
+	strcpy(&(word[11][0]), "odd");
+	strcpy(&(word[12][0]), "procedure");
+	strcpy(&(word[13][0]), "read");
+	strcpy(&(word[14][0]), "repeat");
+	strcpy(&(word[15][0]), "return");
+	strcpy(&(word[16][0]), "then");
+	strcpy(&(word[17][0]), "until");
+	strcpy(&(word[18][0]), "var");
+	strcpy(&(word[19][0]), "while");
+	strcpy(&(word[20][0]), "write");
 
 	/* 设置保留字符号 */
 	wsym[0] = beginsym;
@@ -294,18 +309,20 @@ void init()
 	wsym[4] = dosym;
 	wsym[5] = elsesym;
 	wsym[6] = endsym;
-	wsym[7] = ifsym;
-	wsym[8] = intsym;
-	wsym[9] = mainsym;
-	wsym[10] = oddsym;
-	wsym[11] = procsym;
-	wsym[12] = readsym;
-	wsym[13] = repeatsym;
-	wsym[14] = thensym;
-	wsym[15] = untilsym;
-	wsym[16] = varsym;
-	wsym[17] = whilesym;
-	wsym[18] = writesym;
+	wsym[7] = functionsym;
+	wsym[8] = ifsym;
+	wsym[9] = intsym;
+	wsym[10] = mainsym;
+	wsym[11] = oddsym;
+	wsym[12] = procsym;
+	wsym[13] = readsym;
+	wsym[14] = repeatsym;
+	wsym[15] = returnsym;
+	wsym[16] = thensym;
+	wsym[17] = untilsym;
+	wsym[18] = varsym;
+	wsym[19] = whilesym;
+	wsym[20] = writesym;
 
 	/* 设置指令名称 */
 	strcpy(&(mnemonic[lit][0]), "lit");
@@ -606,31 +623,150 @@ void gen(enum fct x, int y, int z)
 	cx++;
 }
 
-int declaration_list(int tx, int dx)
+void functions(int* ptx, int* pdx)
 {
-	gen(jmp, 0, 1);
+	while (sym == functionsym) {
+		int i = 3;
+		gen(jmp, 0, cx+1);
+		function(ptx, &i);
+	}
+}
+
+void function(int* ptx, int* pdx)
+{
+	if (sym == functionsym) {
+		getsym();
+		if (sym == ident) {
+			enter(func, ptx, 1, pdx);		//-----------------
+			getsym();
+			if (sym == lparen) {
+				getsym();
+				argument(ptx, pdx);
+				if (sym == rparen) {
+					getsym();
+					if (sym == lbrace) {
+						getsym();
+						declaration_list(ptx, pdx);
+						statement_list(ptx);
+						if (sym == returnsym) {
+							getsym();
+							expression(ptx);
+							if (sym == semicolon) {
+								getsym();
+							}
+							else
+								error(205);
+						}
+
+						if (sym == rbrace) {
+							gen(opr, 0, 0);
+							getsym();
+						}
+						else
+							error(206);
+					}
+					else
+						error(204);
+				}
+				else
+					error(203);	
+			}
+			else
+				error(202);	//函数名后要跟左括号
+		}
+		else
+			error(201);	//没有函数名
+	}
+	else
+		error(200);	//function要以function开头
+}
+
+void argument(int *ptx, int *pdx)
+{
+	int is_int_flag;	//用来记录是int还是char,
+	if(sym != intsym && sym!=charsym && sym!=rparen)
+		error(199);	//type只能是int或char
+	int cnt=0;
+	while (sym == intsym || sym == charsym)	//如果是type
+	{
+		if (sym == intsym)
+			is_int_flag = 1;
+		else
+			is_int_flag = 0;
+		getsym();
+		if (sym == ident)
+		{
+			getsym();
+			if (is_int_flag == 1)
+				enter(integer, ptx, 1, pdx);		/* 填写符号表 -----------------*/
+			else
+				enter(character, ptx, 1, pdx);
+			//gen(sto, 1, cnt++);
+			cnt++;
+			if (sym == comma )
+			{
+				getsym();
+			}
+		}
+		else
+			error(110);	//格式错误，type后应为ID
+	}
+	gen(lit, 0, cnt );	//将参数个数lod到栈顶，记录参数个数
+	int cx1 = cx;
+	for (int i = 0; i < cnt; i++) {
+		gen(sto, 1, i + 3);
+	}
+	int cx2 = cx - 1;
+	while (cx2 >= cx1) {
+		code[cx2--].l = cnt+4;
+	}
+	
+}
+
+
+void declaration_list(int* ptx, int* pdx)
+{
+	//gen(jmp, 0, 1);
 	while (sym == intsym || sym == charsym)
 	{
-		declaration_stat(&tx, &dx);
+		declaration_stat(ptx, pdx);
 	}
-	gen(ini, 0, dx);
+	gen(ini, 0, *(pdx));
 
 	int i;
 	if (tableswitch)		/* 输出符号表 */
 	{
-		for (i = 1; i <= tx; i++)
+		for (i = 1; i <= *(ptx); i++)
 		{
 			switch (table[i].kind)
 			{
 			case integer:
 				printf("    %d int   %s ", i, table[i].name);
-				printf("addr=%d\n", table[i].adr);
+				printf(" idx=%d ", table[i].idx);
+				printf(" val=%d ", table[i].val);
+				printf(" level=%d ", table[i].level);
+				printf(" addr=%d ", table[i].adr);
+				printf(" size=%d \n", table[i].size);
 				fprintf(ftable, "    %d var   %s ", i, table[i].name);
 				fprintf(ftable, "addr=%d\n", table[i].adr);
 				break;
 			case character:
 				printf("    %d char   %s ", i, table[i].name);
-				printf("addr=%d\n", table[i].adr);
+				printf(" idx=%d ", table[i].idx);
+				printf(" val=%d ", table[i].val);
+				printf(" level=%d ", table[i].level);
+				printf(" addr=%d ", table[i].adr);
+				printf(" size=%d \n", table[i].size);
+				fprintf(ftable, "    %d var   %s ", i, table[i].name);
+				fprintf(ftable, "addr=%d\n", table[i].adr);
+				break;
+			case func:
+				printf("    %d func   %s ", i, table[i].name);
+				printf(" idx=%d ", table[i].idx);
+				printf(" val=%d ", table[i].val);
+				printf(" level=%d ", table[i].level);
+				printf(" addr=%d ", table[i].adr);
+				printf(" size=%d \n", table[i].size);
 				fprintf(ftable, "    %d var   %s ", i, table[i].name);
 				fprintf(ftable, "addr=%d\n", table[i].adr);
 				break;
@@ -639,8 +775,6 @@ int declaration_list(int tx, int dx)
 		printf("\n");
 		fprintf(ftable, "\n");
 	}
-
-	return tx;
 }
 
 
@@ -1163,6 +1297,30 @@ int factor(int *ptx)
 			error(130);	/* 标识符未声明 */
 		}
 		getsym();
+
+		if (table[i].kind == func) {		//处理函数部分
+			int ti = i;
+			if (sym == lparen) {
+				getsym();
+				int cnt = 3;
+				while (sym == ident || sym==number) {
+					expression(ptx);
+					//gen(sto, 1, cnt++);
+					if (sym == comma)
+						getsym();
+				}
+				if (sym == rparen) {
+					gen(cal, 1, table[ti].adr);	
+					getsym();
+					return ;
+				}
+				else
+					error(301);
+			}
+			else
+				error(300);
+		}
+
 		int bracket_flag = 0;
 		int bracket_i = 0;
 		if (sym == lbracket) {	//左中括号，是数组形式
@@ -1360,6 +1518,9 @@ void enter(enum object k, int* ptx, int idx, int *pdx)
 			table[(*ptx)].adr = (*pdx);
 			(*pdx)++;
 			break;
+		case func:
+			table[(*ptx)].adr = cx;
+			break;
 		}
 	}
 }
@@ -1429,6 +1590,7 @@ void interpret()
 
 	printf("Start pl0\n");
 	fprintf(fresult, "Start pl0\n");
+	int arg=0;	//函数参数个数
 	s[0] = 0; /* s[0]不用 */
 	s[1] = 0; /* 主程序的三个联系单元均置为0 */
 	s[2] = 0;
@@ -1446,9 +1608,11 @@ void interpret()
 			switch (i.a)
 			{
 			case 0:  /* 函数调用结束后返回 */
-				t = b - 1;
-				p = s[t + 3];
-				b = s[t + 2];
+				s[b-arg] = s[t];		//将返回结果保存到清理当前过程后的栈顶
+				t = b - 1 - arg;
+				p = s[t + arg + 3];
+				b = s[t + arg + 2];
+				t = t + 1;
 				break;
 			case 1: /* 栈顶元素取反 */
 				s[t] = -s[t];
@@ -1525,18 +1689,33 @@ void interpret()
 			break;
 		case lod:	/* 取相对当前过程的数据基地址为a的内存的值到栈顶 */
 			t = t + 1;
-			s[t] = s[1 + i.a];
+			s[t] = s[base(i.l, s, b) + i.a];
 			break;
 		case loa:	/* 将栈顶变为地址为a,偏移为栈顶的值   执行前栈顶：...3   执行后栈顶：...a[3]  即从3得到a[3]的值  */
 			s[t] = s[1 + s[t] + i.a];
 			break;
 		case sto:	/* 栈顶的值存到相对当前过程的数据基地址为a的内存 */
-			s[1 + i.a] = s[t];
-			t = t - 1;
+			if (i.l == 0) {
+				s[base(i.l, s, b) + i.a] = s[t];
+				t = t - 1;
+			}
+			else {
+				int tem = t + 1 + i.a;
+				s[tem] = s[tem - i.l];
+				arg = i.l-3;
+				//t--;
+			}
 			break;
 		case sta:	/* 栈顶的值存入地址为次栈顶的内存		执行前栈顶：...3 999   执行后栈顶：...  将999存入a[3]   */
 			s[1 + s[t - 1] + i.a] = s[t];
 			t = t - 2;
+			break;
+		case cal:	/* 调用子过程 */
+			s[t + 2] = base(i.l, s, b);	/* 将父过程基地址入栈，即建立静态链 */
+			s[t + 3] = b;	/* 将本过程基地址入栈，即建立动态链 */
+			s[t + 4] = p;	/* 将当前指令指针入栈，即保存返回地址 */
+			b = t + 2;	/* 改变基地址指针值为新过程的基地址 -----------------*/
+			p = i.a;	/* 跳转 */
 			break;
 		case ini:	/* 在数据栈中为被调用的过程开辟a个单元的数据区 */
 			t = t + i.a;
@@ -1562,4 +1741,16 @@ void interpret()
 	} while (p != 0);
 	printf("End pl0\n");
 	fprintf(fresult, "End pl0\n");
+}
+
+int base(int l, int* s, int b)
+{
+	int b1;
+	b1 = b;
+	while (l > 0)
+	{
+		b1 = s[b1];
+		l--;
+	}
+	return b1;
 }
